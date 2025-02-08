@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تبدیل متن به گفتار و گفتار به متن</title>
+    <link href="https://cdn.fontcdn.ir/font/bnazanin/0.0.1/bnazanin.min.css" rel="stylesheet">
+    <style>
+        /* General Styles */
+        body {
+            font-family: 'B Nazanin', serif;
+            background-color: #e9eff1;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            direction: rtl;
+        }
+
+        .container {
+            display: flex;
+            justify-content: space-between;
+            gap: 30px;
+            width: 90%;
+            max-width: 1200px;
+            padding: 40px;
+            background-color: #ffffff;
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .section {
+            width: 48%;
+            text-align: center;
+            padding: 20px;
+            background-color: #f8f9fc;
+            border-radius: 15px;
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        h1, h3 {
+            color: #333;
+            font-size: 30px;
+            margin-bottom: 25px;
+            font-weight: 600;
+        }
+
+        textarea {
+            padding: 15px;
+            width: 100%;
+            margin-bottom: 25px;
+            border: 2px solid #b5c6d1;
+            border-radius: 12px;
+            font-size: 18px;
+            outline: none;
+            background-color: #f5f7fb;
+            height: 150px;
+            resize: none;
+            box-sizing: border-box;
+            font-family: 'B Nazanin', serif;
+        }
+
+        textarea:focus {
+            border-color: #4caf50;
+            background-color: #ffffff;
+        }
+
+        button {
+            padding: 12px 25px;
+            background-color: #4caf50;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            width: 100%;
+            max-width: 300px;
+            margin: 15px auto;
+            font-weight: bold;
+            font-family: 'B Nazanin', serif;
+        }
+
+        button:hover {
+            background-color: #388e3c;
+        }
+
+        .loading {
+            margin-top: 20px;
+            color: #333;
+            font-size: 18px;
+            display: none;
+            font-weight: 600;
+        }
+
+        audio {
+            margin-top: 20px;
+            width: 80%;
+            max-width: 500px;
+            border-radius: 8px;
+            margin: 15px auto;
+        }
+
+        #transcriptionResult {
+            margin-top: 20px;
+            font-size: 18px;
+            color: #333;
+            font-weight: bold;
+            display: none;
+            word-wrap: break-word;
+        }
+
+        .footer {
+            margin-top: 40px;
+            font-size: 16px;
+            color: #777;
+            text-align: center;
+        }
+
+        .footer a {
+            color: #4caf50;
+            text-decoration: none;
+        }
+
+        /* File Upload Section */
+        .file-upload-container {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 25px;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .file-upload-container label {
+            font-size: 18px;
+            color: #333;
+        }
+
+        .file-upload-container input {
+            font-size: 16px;
+            padding: 10px;
+            border-radius: 8px;
+            border: 2px solid #b5c6d1;
+            width: 80%;
+            margin-top: 10px;
+            font-family: 'B Nazanin', serif;
+        }
+
+        .file-upload-container button {
+            width: auto;
+            padding: 12px 25px;
+            font-size: 18px;
+            margin-top: 15px;
+            background-color: #4caf50;
+            color: white;
+        }
+
+        .file-upload-container button:hover {
+            background-color: #388e3c;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <!-- Left Section: Text to Speech -->
+        <div class="section">
+            <h3>تبدیل متن به گفتار</h3>
+            <textarea id="textInput" placeholder="متن خود را وارد کنید..."></textarea>
+            <div class="button-audio-container">
+                <audio id="audioPlayer" controls></audio>
+                <button onclick="convertTextToSpeech()">تبدیل به گفتار</button>
+            </div>
+            <div class="loading" id="loadingMessage">در حال تبدیل متن به گفتار... لطفاً صبر کنید.</div>
+        </div>
+
+        <!-- Right Section: Speech to Text -->
+        <div class="section">
+            <h3>تبدیل گفتار به متن</h3>
+            <div class="file-upload-container">
+                <label for="audioInput">فایل صوتی را آپلود کنید</label>
+                <input type="file" id="audioInput" accept="audio/*">
+                <button onclick="transcribeAudio()">تبدیل به متن</button>
+            </div>
+            <div class="loading" id="sttLoadingMessage">در حال پردازش صوت... لطفاً صبر کنید.</div>
+            <div id="transcriptionResult"></div>
+        </div>
+    </div>
+
+    <script>
+        // Function for Text-to-Speech (TTS)
+        function convertTextToSpeech() {
+            var text = document.getElementById("textInput").value;
+            var loadingMessage = document.getElementById("loadingMessage");
+            var audioPlayer = document.getElementById("audioPlayer");
+
+            if (!text) {
+                alert("لطفاً متن خود را وارد کنید.");
+                return;
+            }
+
+            // Show loading message
+            loadingMessage.style.display = "block";
+
+            fetch("/tts", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ text: text })
+            })
+            .then(response => response.blob())
+            .then(blob => {
+                // Hide loading message
+                loadingMessage.style.display = "none";
+
+                // Create a URL for the audio file
+                var audioUrl = URL.createObjectURL(blob);
+                audioPlayer.src = audioUrl; // Set the audio player's source
+                audioPlayer.style.display = "block"; // Show the audio player
+            })
+            .catch(error => {
+                loadingMessage.style.display = "none";
+                alert("خطا در تبدیل متن به گفتار. لطفاً دوباره تلاش کنید.");
+                console.error(error);
+            });
+        }
+
+        // Function for Speech-to-Text (STT)
+        function transcribeAudio() {
+            var audioInput = document.getElementById("audioInput").files[0];
+            var loadingMessage = document.getElementById("sttLoadingMessage");
+            var transcriptionResult = document.getElementById("transcriptionResult");
+
+            if (!audioInput) {
+                alert("لطفاً فایل صوتی را آپلود کنید.");
+                return;
+            }
+
+            // Show loading message
+            loadingMessage.style.display = "block";
+
+            var formData = new FormData();
+            formData.append("audio", audioInput);
+
+            fetch("/stt", {
+                method: "POST",
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                loadingMessage.style.display = "none";
+                if (data.transcription) {
+                    transcriptionResult.style.display = "block";
+                    transcriptionResult.innerText = data.transcription;
+                } else {
+                    transcriptionResult.style.display = "none";
+                    alert("خطا در تبدیل گفتار به متن.");
+                }
+            })
+            .catch(error => {
+                loadingMessage.style.display = "none";
+                alert("خطا در پردازش صوت. لطفاً دوباره تلاش کنید.");
+                console.error(error);
+            });
+        }
+    </script>
+</body>
+</html>
