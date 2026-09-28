@@ -1,9 +1,13 @@
-// GPT-Live WebRTC: credentials and agent instructions stay on the Flask server.
+// GPT-Live WebRTC: API credentials and configuration authority stay on Flask.
 const el = id => document.getElementById(id);
 let callActive = false, callMuted = false, callBusy = false, callPhase = 'idle', callEpoch = 0;
 let callStream = null, peer = null, events = null, callToken = null, pollTimer = null, startupTimer = null;
-let speechStatusTimer=null, silentClock=null;
+let silentClock=null, disconnectTimer=null;
+let vadTimer=null, lastVoiceAt=0, bargeWaiting=false, releaseBusy=false, sessionBaseMs=0;
+let callPaused=false, pauseKind=null, pollFailures=0, lastWarningId=0, followTranscript=true;
 let sessionStarted = false, backendReady = false, transcriptGroups = [], transcriptSeen = new Set();
+let receivedReplyVersions=new Set(), pendingReceipt=null;
+let completedHistory=[], playingReply=null, playbackUrl=null, replyGeneration=0;
 let documentId = null, documentBusy = false, documentEpoch = 0;
 const profileFields = {preferred_name:'profileName', trusted_contacts:'profileContacts', orientation_facts:'profileFacts', routine:'profileRoutine'};
 function setCallState(phase, text, hint='') { callPhase=phase; el('callState').textContent=text; el('callHint').textContent=hint; updateCallControls(); }
@@ -20,7 +24,7 @@ function updateCallControls() {
 }
 function sendEvent(event) { if(events?.readyState==='open') events.send(JSON.stringify(event)); }
 function enableListening() {
-    if (!callActive || !sessionStarted || !backendReady) return;
+    if (!callActive || !sessionStarted || !backendReady || callPaused) return;
     clearTimeout(startupTimer);
     callStream?.getAudioTracks().forEach(track=>track.enabled=!callMuted);
     setCallState(callMuted?'muted':'listening',callMuted?'میکروفون قطع است':'در حال گوش دادن','می‌توانید هنگام صحبت دستیار هم صحبت کنید.');
@@ -29,7 +33,7 @@ function transcriptEvent(event) {
     if(transcriptSeen.has(event.event_id)) return;
     transcriptSeen.add(event.event_id);
     const role=event.type==='session.input_transcript.delta'?'patient':'assistant';
-    const fragment={text:event.delta,start:event.start_ms,end:event.end_ms};
+    const fragment={text:event.delta,start:event.start_ms+sessionBaseMs,end:event.end_ms+sessionBaseMs};
     if(typeof fragment.text!=='string' || !Number.isFinite(fragment.start) || !Number.isFinite(fragment.end)) return;
     // Timing, not packet arrival order, determines independent speaker bubbles.
     let group=transcriptGroups.find(g=>!g.typed && g.role===role && fragment.start<=g.end+1500 && fragment.end>=g.start-1500);
@@ -42,42 +46,82 @@ function transcriptEvent(event) {
     group.start=Math.min(group.start,fragment.start); group.end=Math.max(group.end,fragment.end);
     group.node.querySelector('p').textContent=group.fragments.map(f=>f.text).join('');
     transcriptGroups.sort((a,b)=>a.start-b.start);
-    transcriptGroups.forEach(g=>el('callTranscript').append(g.node));
-    if(transcriptSeen.size>2000) { callError('این تماس طولانی شده است. لطفاً پایان دهید و تماس تازه‌ای شروع کنید.'); endCall(false); }
+    const list=el('callTranscript');
+    transcriptGroups.forEach((g,i)=>{if(list.children[i]!==g.node)list.insertBefore(g.node,list.children[i] || null);});
+    saveHistory();followLatest();
+    // Bound deduplication memory, not conversation duration or the visible transcript.
+    if(transcriptSeen.size>2000) transcriptSeen.delete(transcriptSeen.values().next().value);
+}
+function receiveLiveMessage(raw,epoch){
+    if(!callActive || epoch!==callEpoch)return;
+    let event;
+    try{event=JSON.parse(raw);}catch(_){
+        callError('یک پیام تماس قابل خواندن نبود؛ تماس ادامه دارد.');return;
+    }
+    if(!event || typeof event.type!=='string')return;
+    try{handleLiveEvent(event,epoch);}catch(_){
+        // A DOM/runtime failure is not malformed provider JSON. Preserve the text.
+        pauseForRecovery('نمایش صفحه با نسخهٔ برنامه هماهنگ نیست. صفحه را با Ctrl+Shift+R تازه کنید.','interface');
+    }
 }
 function handleLiveEvent(event,epoch=callEpoch) {
     if(!callActive || epoch!==callEpoch) return;
     if(event.type==='session.started') { sessionStarted=true; enableListening(); }
     else if(event.type==='session.input_transcript.delta' || event.type==='session.output_transcript.delta') {
+        // Live handles input; only checked, rendered backend answers are audible.
+        if(event.type==='session.output_transcript.delta') return;
+        if(playingReply) interruptCall();
         transcriptEvent(event);
-        if(event.type==='session.output_transcript.delta') {
-            setCallState('speaking','دستیار در حال صحبت است','متن زیر گفتار واقعی دستیار است؛ می‌توانید صحبت او را قطع کنید.');
-            clearTimeout(speechStatusTimer);speechStatusTimer=setTimeout(()=>{if(callActive && epoch===callEpoch && !callBusy)enableListening();},2500);
-        }
-        else setCallState('listening','در حال گوش دادن');
+        setCallState('listening','در حال گوش دادن');
     } else if(event.type==='session.closed') { callError('تماس صوتی پایان یافت. برای ادامه تماس تازه‌ای شروع کنید.'); endCall(false); }
-    else if(event.type==='error') { callError('خطای ارتباط زنده؛ تماس را پایان دهید و دوباره شروع کنید.'); endCall(false); }
+    else if(event.type==='error') pauseForRecovery('یکی از درخواست‌های تماس پذیرفته نشد. متن حفظ شده؛ برای تلاش دوباره ادامه تماس را بزنید.');
+}
+function pauseForRecovery(message,kind='command') {
+    callPaused=true;pauseKind=kind;backendReady=false;
+    callStream?.getAudioTracks().forEach(t=>t.enabled=false);
+    el('replyAudio').pause();callError(message);
+    el('resumeCall').textContent='ادامه تماس / تلاش دوباره';el('resumeCall').hidden=false;
+    setCallState('paused','تماس مکث شده؛ متن محفوظ است');
 }
 async function pollBackend(epoch) {
     if(!callActive || epoch!==callEpoch || !callToken) return;
     try {
-        const status=await apiJSON(await fetch('/live/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:callToken})}));
+        const response=await fetch('/live/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:callToken}),signal:AbortSignal.timeout(8000)});
+        if(response.status===404) {if(epoch===callEpoch){callError('سرور این تماس را دیگر در حافظه ندارد؛ ممکن است دوباره اجرا شده باشد. متن محفوظ است.');endCall(false);}return;}
+        const status=await apiJSON(response);
         if(!callActive || epoch!==callEpoch) return;
-        if(status.closed || status.error) throw new Error('ارتباط با راهنما یا دستیار سرور قطع شد. برای جلوگیری از پاسخ بدون راهنما، تماس متوقف شد.');
-        if(!backendReady && status.ready) {backendReady=true;enableListening();}
+        pollFailures=0;
+        if(callPaused && pauseKind==='network' && status.ready && !status.warning && peer?.connectionState==='connected'){
+            callPaused=false;pauseKind=null;backendReady=true;callError();el('resumeCall').hidden=true;enableListening();
+            if(playingReply)el('replyAudio').play().catch(()=>{el('resumeCall').hidden=false;});
+        }
+        if(status.pending_speech!==null && status.pending_speech!==undefined) releaseInterruptedReply(status.pending_speech,epoch);
+        if(status.closed || status.error) {callError('ارتباط اصلی تماس پایان یافت. متن محفوظ است؛ برای ادامه تماس تازه‌ای شروع کنید.');endCall(false);return;}
+        if(status.warning && status.warning_id!==lastWarningId) {
+            lastWarningId=status.warning_id;
+            pauseForRecovery(status.warning==='backend_unavailable' ? 'پاسخ راهنما آماده نشد؛ متن محفوظ است. برای تلاش دوباره ادامه تماس را بزنید.' : 'یک فرمان تماس پذیرفته نشد؛ متن محفوظ است. ادامه تماس را بزنید.');
+        }
+        if(!callPaused && !backendReady && status.ready) {backendReady=true;enableListening();}
         callBusy=status.working; updateCallControls();
-        if(callBusy) setCallState('responding','در حال بررسی راهنما و پاسخ دادن','دستیار ابتدا سند مراقب و قواعد ایمنی را بررسی می‌کند.');
+        if(callBusy && !callPaused && !playingReply) setCallState('responding','در حال بررسی راهنما و پاسخ دادن');
         el('agentAudit').textContent=(status.audit || []).map(a=>
             'گفتار تشخیص‌داده‌شده: '+a.recognized_input+'\n'+
             'بخش‌های بازیابی‌شده: '+(a.passages.map(p=>p.title+' / '+p.id+': '+p.text).join('\n') || 'مورد مرتبطی پیدا نشد')+'\n'+
             'پاسخ آماده‌شده در سرور ('+a.source.kind+'): '+a.reply).join('\n\n────────\n\n');
-    } catch(error) { if(epoch===callEpoch && callActive) {callError(error.message);endCall(false);} return; }
-    pollTimer=setTimeout(()=>pollBackend(epoch),800);
+    } catch(error) {
+        if(epoch!==callEpoch || !callActive) return;
+        pollFailures++;
+        pauseForRecovery('ارتباط با سرور ناپایدار است؛ دوباره بررسی می‌شود. متن تماس پاک نشده است.','network');
+        if(pollFailures>=5) {callError('سرور پس از چند تلاش در دسترس نبود. متن محفوظ است؛ اتصال را بررسی و تماس تازه‌ای شروع کنید.');endCall(false);return;}
+    }
+    pollTimer=setTimeout(()=>pollBackend(epoch),pollFailures ? 2000 : 800);
 }
 async function startCall() {
     if(callActive || documentBusy) return;
-    callActive=true; callMuted=false; callBusy=false; sessionStarted=false;backendReady=false;callError();
-    transcriptGroups=[];transcriptSeen.clear();el('callTranscript').replaceChildren();el('emptyCallTranscript').hidden=false;el('agentAudit').textContent='';
+    callActive=true; callPaused=false;pollFailures=0;lastWarningId=0;followTranscript=true; callMuted=false; callBusy=false; sessionStarted=false;backendReady=false;callError();
+    const history=conversationHistory();
+    sessionBaseMs=Math.max(0,...transcriptGroups.map(g=>g.end))+1000;
+    transcriptSeen.clear();receivedReplyVersions.clear();bargeWaiting=false;releaseBusy=false;el('replyAudio').muted=false;el('agentAudit').textContent='';
     const epoch=++callEpoch; setCallState('starting','در حال اتصال تماس زنده');
     try {
         if(!window.RTCPeerConnection) throw new Error('این مرورگر WebRTC ندارد. از مرورگر جدید استفاده کنید.');
@@ -90,30 +134,45 @@ async function startCall() {
             callMuted=true;callError('میکروفون در دسترس نیست یا اجازه داده نشده است؛ پس از اتصال می‌توانید پیام بنویسید.');
         }
         const pc=new RTCPeerConnection(); peer=pc;
-        pc.ontrack=e=>{
-            if(epoch!==callEpoch) return;
-            el('replyAudio').srcObject=e.streams[0] || new MediaStream([e.track]);
-            el('replyAudio').play().catch(()=>{if(callActive && epoch===callEpoch){el('resumeCall').hidden=false;el('resumeCall').textContent='پخش صدای تماس';}});
+        // Never attach autonomous Live output to a speaker. The backend renders
+        // one checked clip; onended, rather than transcript timing, commits history.
+        pc.ontrack=()=>{};
+        pc.onconnectionstatechange=()=>{
+            if(epoch!==callEpoch || !callActive) return;
+            if(pc.connectionState==='connected'){clearTimeout(disconnectTimer);return;}
+            if(pc.connectionState==='disconnected'){
+                pauseForRecovery('ارتباط صوتی لحظه‌ای قطع شده است؛ فرصت اتصال دوباره داده می‌شود.','network');
+                clearTimeout(disconnectTimer);disconnectTimer=setTimeout(()=>{if(callActive && epoch===callEpoch && pc.connectionState==='disconnected'){callError('ارتباط صوتی بازیابی نشد. متن محفوظ است.');endCall(false);}},15000);
+            } else if(pc.connectionState==='failed'){callError('ارتباط صوتی از دست رفت. متن محفوظ است.');endCall(false);}
         };
-        pc.onconnectionstatechange=()=>{if(epoch===callEpoch && callActive && ['failed','disconnected'].includes(pc.connectionState)){callError('ارتباط صوتی قطع شد. دوباره تماس را شروع کنید.');endCall(false);}};
-        if(callStream) callStream.getTracks().forEach(t=>pc.addTrack(t,callStream));
-        else {
-            // GPT-Live's timeline needs ongoing input media even for typed-only calls.
-            // This locally generated near-silent clock contains no microphone audio.
-            const context=new AudioContext(), destination=context.createMediaStreamDestination();
-            const oscillator=context.createOscillator(), gain=context.createGain();
-            oscillator.frequency.value=20;gain.gain.value=.0001;
-            oscillator.connect(gain).connect(destination);oscillator.start();
-            silentClock={context,oscillator,stream:destination.stream};await context.resume();
-            destination.stream.getTracks().forEach(t=>pc.addTrack(t,destination.stream));
+        // A continuous near-silent clock keeps Live context flowing during mute or
+        // typed-only use. Only the original microphone track carries patient audio.
+        const context=new AudioContext(), destination=context.createMediaStreamDestination();
+        const oscillator=context.createOscillator(), gain=context.createGain();
+        oscillator.frequency.value=20;gain.gain.value=.0001;
+        oscillator.connect(gain).connect(destination);oscillator.start();
+        const microphone=callStream ? context.createMediaStreamSource(callStream) : null;
+        microphone?.connect(destination);
+        if(microphone){
+            const analyser=context.createAnalyser();analyser.fftSize=1024;microphone.connect(analyser);
+            const samples=new Float32Array(analyser.fftSize);let loudFrames=0;
+            vadTimer=setInterval(()=>{
+                if(!callActive || callMuted || callPaused || !backendReady) {loudFrames=0;return;}
+                analyser.getFloatTimeDomainData(samples);
+                const rms=Math.sqrt(samples.reduce((sum,x)=>sum+x*x,0)/samples.length);
+                if(rms>.025){lastVoiceAt=performance.now();loudFrames++;}else loudFrames=0;
+                if(loudFrames>=3 && playingReply && !bargeWaiting) interruptCall();
+            },25);
         }
+        silentClock={context,oscillator,stream:destination.stream,microphone};await context.resume();
+        destination.stream.getTracks().forEach(t=>pc.addTrack(t,destination.stream));
         const dc=pc.createDataChannel('oai-events');events=dc;
-        dc.onmessage=e=>{try{handleLiveEvent(JSON.parse(e.data),epoch);}catch(_){if(epoch===callEpoch){callError('پیام نامعتبر از سرویس تماس دریافت شد.');endCall(false);}}};
+        dc.onmessage=e=>receiveLiveMessage(e.data,epoch);
         dc.onclose=()=>{if(callActive && epoch===callEpoch){callError('کانال تماس بسته شد.');endCall(false);}};
         const offer=await pc.createOffer();await pc.setLocalDescription(offer);
         if(epoch!==callEpoch || !callActive) return;
         const result=await apiJSON(await fetch('/live/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-            sdp:offer.sdp,profile:Object.fromEntries(Object.entries(profileFields).map(([k,id])=>[k,el(id).value.trim()])),document_id:documentId})}));
+            sdp:offer.sdp,history,profile:Object.fromEntries(Object.entries(profileFields).map(([k,id])=>[k,el(id).value.trim()])),document_id:documentId})}));
         if(!callActive || epoch!==callEpoch){closeServer(result.token);return;}
         callToken=result.token;
         await pc.setRemoteDescription({type:'answer',sdp:result.transport.sdp});
@@ -128,10 +187,25 @@ function toggleMute() {
     sendEvent({type:callMuted?'session.input_audio.mute':'session.input_audio.unmute',event_id:crypto.randomUUID()});
     setCallState(callMuted?'muted':'listening',callMuted?'میکروفون قطع است':'در حال گوش دادن');
 }
-function resumeCall(){el('replyAudio').play().then(()=>el('resumeCall').hidden=true).catch(()=>callError('مرورگر اجازه پخش نمی‌دهد. تنظیمات صدا را بررسی کنید.'));}
+async function resumeCall(){
+    if(!callActive) return;
+    const epoch=callEpoch;
+    if(callPaused){
+        if(pauseKind==='receipt'){if(!await commitReplyReceipt(epoch))return;}
+        else try{
+            const response=await fetch('/live/retry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:callToken})});
+            if(!response.ok) await apiJSON(response);
+            if(epoch!==callEpoch) return;
+            callPaused=false;pauseKind=null;backendReady=true;callError();enableListening();
+        }catch(error){if(epoch===callEpoch)callError(error.message);return;}
+    }
+    el('resumeCall').hidden=true;
+    if(playingReply)el('replyAudio').play().catch(()=>{if(epoch===callEpoch){el('resumeCall').hidden=false;callError('برای پخش صدای تماس دوباره دکمه را بزنید.');}});
+}
 async function sendTypedCall() {
     const text=el('callText').value.trim();
     if(!text || !callActive || !backendReady || callBusy) return;
+    if(playingReply) await interruptCall();
     const epoch=callEpoch;callBusy=true;updateCallControls();
     try {
         const response=await fetch('/live/text',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:callToken,text})});
@@ -140,14 +214,15 @@ async function sendTypedCall() {
         appendTurn('patient',text);
         const at=Math.max(0,...transcriptGroups.map(g=>g.end))+1;
         transcriptGroups.push({role:'patient',typed:true,start:at,end:at,fragments:[{text,start:at,end:at}],node:el('callTranscript').lastElementChild});
-        el('callText').value='';
+        saveHistory();el('callText').value='';
     }catch(error){if(epoch===callEpoch)callError(error.message);}
     finally{if(epoch===callEpoch){callBusy=false;updateCallControls();}}
 }
 function closeServer(token){if(token)fetch('/live/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token}),keepalive:true}).catch(()=>{});}
 function endCall(clear=true) {
-    callActive=false;callEpoch++;callBusy=false;backendReady=false;sessionStarted=false;
-    clearTimeout(pollTimer);clearTimeout(startupTimer);clearTimeout(speechStatusTimer);
+    callActive=false;callEpoch++;replyGeneration++;playingReply=null;pendingReceipt=null;callBusy=false;backendReady=false;sessionStarted=false;
+    if(playbackUrl){URL.revokeObjectURL(playbackUrl);playbackUrl=null;}
+    clearTimeout(pollTimer);clearTimeout(startupTimer);clearTimeout(disconnectTimer);clearInterval(vadTimer);
     callStream?.getTracks().forEach(t=>t.stop());callStream=null;
     if(silentClock){silentClock.oscillator.stop();silentClock.stream.getTracks().forEach(t=>t.stop());silentClock.context.close().catch(()=>{});silentClock=null;}
     el('replyAudio').pause();el('replyAudio').srcObject=null;el('resumeCall').hidden=true;
@@ -159,30 +234,39 @@ function endCall(clear=true) {
     }else pc?.close();
     closeServer(callToken);callToken=null;
     if(clear){
-        transcriptGroups=[];transcriptSeen.clear();el('callTranscript').replaceChildren();el('emptyCallTranscript').hidden=false;
+        // Keep visible chat available for saving/resuming; only Clear erases it.
         el('agentAudit').textContent='';el('callText').value='';Object.values(profileFields).forEach(id=>el(id).value='');removeDocument();callError();
     }
-    setCallState('ended','تماس پایان یافت','برای شروع گفت‌وگوی تازه، شروع تماس را بزنید.');
+    if(clear && !el('retainHistory').checked) resetHistory();
+    else saveHistory();
+    setCallState('ended',transcriptGroups.length?'تماس پایان یافت؛ متن محفوظ است':'تماس پایان یافت؛ تاریخچه پاک شد');
 }
-function clearCallTranscript(){endCall(false);transcriptGroups=[];transcriptSeen.clear();el('callTranscript').replaceChildren();el('emptyCallTranscript').hidden=false;el('agentAudit').textContent='';el('callText').value='';setCallState('ended','متن و زمینه تماس پاک شد','برای یک گفت‌وگوی تازه، شروع تماس را بزنید.');}
+function resetHistory(){
+    completedHistory=[];transcriptGroups=[];transcriptSeen.clear();saveHistory();
+    el('callTranscript').replaceChildren();el('emptyCallTranscript').hidden=false;
+    el('agentAudit').textContent='';el('callText').value='';followTranscript=true;el('latestMessage').hidden=true;
+}
+function clearCallTranscript(){endCall(false);resetHistory();setCallState('ended','متن و زمینه تماس پاک شد','برای یک گفت‌وگوی تازه، شروع تماس را بزنید.');}
+
 function appendTurn(role, text, source = null) {
     el('emptyCallTranscript').hidden = true;
     const item = document.createElement('li'); item.className = role; item.dataset.role = role;
     const label = document.createElement('strong'); label.textContent = role === 'patient' ? 'شما' : 'دستیار';
     const words = document.createElement('p'); words.textContent = text; item.append(label, words);
     if (source) {
-        const kinds = { document: 'بر اساس سند مراقب', profile: 'بر اساس اطلاعات مراقب', general: 'گفت‌وگوی عمومی؛ پاسخ مرتبطی از سند استفاده نشد', safety: 'راهنمایی احتیاطی؛ کمک از مراقب یا پزشک' };
+        const kinds = { reference:'نقل‌قول منبع‌دار', document: 'بر اساس سند مراقب', profile: 'بر اساس اطلاعات مراقب', general: 'گفت‌وگوی عمومی؛ پاسخ مرتبطی از سند استفاده نشد', safety: 'راهنمایی احتیاطی؛ کمک از مراقب یا پزشک' };
         const note = document.createElement('small'); note.textContent = kinds[source.kind] || kinds.general; item.append(note);
         if (source.citations?.length) {
             const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'بخش‌های مرتبط سند'; details.append(summary);
             for (const citation of source.citations) {
                 const title = document.createElement('strong'); title.textContent = citation.title + ' · ' + citation.id;
                 const quote = document.createElement('blockquote'); quote.textContent = citation.text; details.append(title, quote);
+                if(citation.url==='https://ganjoor.net/ferdousi/shahname/aghaz/sh1'){const link=document.createElement('a');link.href=citation.url;link.target='_blank';link.rel='noopener noreferrer';link.textContent='مشاهده منبع در گنجور';details.append(link);}
             }
             item.append(details);
         }
     }
-    el('callTranscript').append(item); item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    el('callTranscript').append(item);followLatest();
 }
 async function apiJSON(response) {
     const data = await response.json().catch(() => ({}));
@@ -232,4 +316,122 @@ function removeDocument() {
     el('documentStatus').textContent = 'سندی بارگذاری نشده است.'; updateCallControls();
 }
 window.addEventListener('pagehide',()=>endCall());
-document.addEventListener('visibilitychange',()=>{if(document.hidden && callActive){endCall(false);callError('تماس با خروج از صفحه متوقف شد. برای ادامه دوباره شروع کنید.');}});
+document.addEventListener('visibilitychange',()=>{
+    if(document.hidden && callActive){
+        callMuted=true;callStream?.getAudioTracks().forEach(t=>t.enabled=false);
+        sendEvent({type:'session.input_audio.mute',event_id:crypto.randomUUID()});
+        el('replyAudio').pause();el('resumeCall').textContent='پخش صدای تماس';el('resumeCall').hidden=false;
+        setCallState('muted','میکروفون با خروج از صفحه قطع شد','تماس و متن حفظ شده‌اند. برای صحبت، میکروفون را وصل کنید.');
+    }
+});
+function followLatest(force=false){
+    if(force) followTranscript=true;
+    if(!followTranscript) {el('latestMessage').hidden=false;return;}
+    requestAnimationFrame(()=>{if(followTranscript){const list=el('callTranscript');list.scrollTop=list.scrollHeight;el('latestMessage').hidden=true;}});
+}
+// Layout changes and growing bubbles also fire scroll events. Only an intentional
+// upward gesture should suspend following; otherwise long streaming text unpins itself.
+const transcriptList=el('callTranscript');
+transcriptList.addEventListener('wheel',event=>{if(event.deltaY<0){followTranscript=false;el('latestMessage').hidden=false;}},{passive:true});
+let touchY=null;
+transcriptList.addEventListener('touchstart',e=>{touchY=e.touches[0]?.clientY;},{passive:true});
+transcriptList.addEventListener('touchmove',e=>{if(touchY!==null && e.touches[0].clientY>touchY+8){followTranscript=false;el('latestMessage').hidden=false;}},{passive:true});
+transcriptList.addEventListener('keydown',e=>{if(['ArrowUp','PageUp','Home'].includes(e.key)){followTranscript=false;el('latestMessage').hidden=false;}});
+transcriptList.addEventListener('scroll',()=>{
+    if(transcriptList.scrollHeight-transcriptList.scrollTop-transcriptList.clientHeight<20){followTranscript=true;el('latestMessage').hidden=true;}
+});
+new ResizeObserver(()=>followLatest()).observe(transcriptList);
+
+const HISTORY_KEY='ava.call.history.v2';
+function saveHistory(){
+    try{
+        localStorage.removeItem('ava.call.history.v1');
+        if(!el('retainHistory').checked || !completedHistory.length)localStorage.removeItem(HISTORY_KEY);
+        else localStorage.setItem(HISTORY_KEY,JSON.stringify({messages:completedHistory.slice(-500)}));
+        el('historyStatus').textContent=el('retainHistory').checked
+            ? 'فقط نوبت‌های کامل در این مرورگر نگه داشته می‌شوند (تا ۵۰۰ پیام). ده تبادل اخیر در تماس بعد استفاده می‌شود.'
+            : 'تاریخچه فقط در تماس جاری است؛ با پایان تماس یا بستن صفحه پاک می‌شود.';
+    }catch(_){el('historyStatus').textContent='مرورگر اجازه ذخیره نداد. پیش از بستن صفحه، «ذخیره متن گفت‌وگو» را بزنید.';}
+}
+function restoreHistory(){
+    try{
+        const raw=localStorage.getItem(HISTORY_KEY);if(!raw){saveHistory();return;}
+        const saved=JSON.parse(raw).messages;
+        if(!Array.isArray(saved) || saved.length%2 || saved.length>500)throw new Error('Invalid history');
+        if(saved.some((g,i)=>g.role!==(i%2?'assistant':'user') || typeof g.content!=='string' || !g.content.trim() || g.content.length>2000))throw new Error('Invalid history');
+        completedHistory=saved;el('retainHistory').checked=true;
+        saved.forEach((g,i)=>{
+            const role=g.role==='user'?'patient':'assistant',at=i*3000,text=g.content;
+            appendTurn(role,text);transcriptGroups.push({role,typed:true,start:at,end:at,fragments:[{text,start:at,end:at}],node:transcriptList.lastElementChild});
+        });
+        saveHistory();followLatest(true);
+    }catch(_){el('historyStatus').textContent='بازیابی متن ذخیره‌شده ممکن نشد؛ می‌توانید آن را پاک کنید.';}
+}
+restoreHistory();
+function conversationHistory(){return completedHistory.slice(-20);}
+function downloadHistory(){
+    const text=[...el('callTranscript').querySelectorAll('li')].map(n=>n.querySelector('strong').textContent+': '+n.querySelector('p').textContent).join('\n\n');
+    if(!text)return;
+    const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));
+    const link=document.createElement('a');link.href=url;link.download='ava-conversation.txt';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+async function interruptCall(){
+    if(!callActive || bargeWaiting || callPaused)return;
+    const epoch=callEpoch;bargeWaiting=true;replyGeneration++;
+    // Stop local clip immediately. A partial answer never enters completed history.
+    el('replyAudio').pause();el('replyAudio').muted=true;el('replyAudio').removeAttribute('src');el('replyAudio').load();
+    if(playingReply){playingReply.node.dataset.incomplete='true';const note=document.createElement('small');note.textContent='پاسخ قطع شد — در تاریخچه استفاده نمی‌شود';playingReply.node.append(note);}
+    playingReply=null;
+    setCallState('listening','حرف شما را می‌شنوم','پاسخ قبلی قطع شد؛ صحبت کنید.');
+    try{
+        const response=await fetch('/live/interrupt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:callToken})});
+        if(!response.ok)await apiJSON(response);
+    }catch(error){if(epoch===callEpoch)pauseForRecovery('فرمان قطع پاسخ به سرور نرسید. برای ادامه تلاش دوباره را بزنید.');}
+}
+async function releaseInterruptedReply(version,epoch){
+    if(receivedReplyVersions.has(version) || releaseBusy || callPaused || playingReply || performance.now()-lastVoiceAt<900)return;
+    releaseBusy=true;const generation=replyGeneration;
+    try{
+        const response=await fetch('/live/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:callToken,version})});
+        if(response.status===409)return;
+        const result=await apiJSON(response);
+        if(epoch!==callEpoch || generation!==replyGeneration || !callActive)return;
+        // More microphone audio may have arrived during fetch; revalidate on server next poll.
+        if(performance.now()-lastVoiceAt<900)return;
+        if(receivedReplyVersions.has(version))return;
+        receivedReplyVersions.add(version);bargeWaiting=false;
+        const bytes=Uint8Array.from(atob(result.audio_base64),c=>c.charCodeAt(0));
+        if(playbackUrl)URL.revokeObjectURL(playbackUrl);
+        playbackUrl=URL.createObjectURL(new Blob([bytes],{type:result.audio_mime}));
+        appendTurn('assistant',result.reply,result.source);
+        const node=transcriptList.lastElementChild,at=Math.max(0,...transcriptGroups.map(g=>g.end))+1;
+        transcriptGroups.push({role:'assistant',typed:true,start:at,end:at,fragments:[{text:result.reply,start:at,end:at}],node});
+        playingReply={...result,node};
+        const audio=el('replyAudio');audio.srcObject=null;audio.src=playbackUrl;audio.muted=false;
+        audio.onended=async()=>{
+            if(epoch!==callEpoch || generation!==replyGeneration || !playingReply)return;
+            const finished=playingReply;playingReply=null;
+            // Only this completion callback adds an exchange. Status text, duplicate
+            // provider events and interrupted clips are not conversation memory.
+            completedHistory.push({role:'user',content:finished.transcript.slice(0,2000)},{role:'assistant',content:finished.reply.slice(0,2000)});
+            completedHistory=completedHistory.slice(-500);saveHistory();enableListening();
+            pendingReceipt={token:callToken,version};await commitReplyReceipt(epoch);
+        };
+        audio.onerror=()=>{if(epoch===callEpoch)pauseForRecovery('پخش پاسخ ناموفق بود؛ پاسخ ناتمام وارد تاریخچه نشده است.');};
+        setCallState('speaking','دستیار در حال صحبت است');
+        await audio.play().catch(()=>{el('resumeCall').hidden=false;el('resumeCall').textContent='پخش پاسخ';});
+    }catch(error){if(epoch===callEpoch)pauseForRecovery('پاسخ آماده است اما پخش آن نیاز به تلاش دوباره دارد.');}
+    finally{if(epoch===callEpoch)releaseBusy=false;}
+}
+
+async function commitReplyReceipt(epoch){
+    if(!pendingReceipt)return true;
+    try{
+        const receipt=await fetch('/live/played',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(pendingReceipt)});
+        if(epoch!==callEpoch)return false;
+        if(!receipt.ok)throw new Error('Receipt unavailable');
+        pendingReceipt=null;
+        if(pauseKind==='receipt'){callPaused=false;pauseKind=null;backendReady=true;callError();enableListening();}
+        return true;
+    }catch(_){if(epoch===callEpoch)pauseForRecovery('ارتباط هنگام ثبت پاسخ قطع شد؛ متن کامل محفوظ است. برای ثبت دوباره، ادامه تماس را بزنید.','receipt');return false;}
+}

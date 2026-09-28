@@ -2,10 +2,12 @@ import unittest
 from unittest.mock import Mock, patch
 import app
 from live_call import LiveCall, session_config, calls
+from test_app import wav_bytes
 
 
 class LiveTests(unittest.TestCase):
     def setUp(self):
+        audio_patch=patch('app.synthesize_audio',return_value=wav_bytes());audio_patch.start();self.addCleanup(audio_patch.stop)
         self.client = Mock()
         self.call = LiveCall(self.client, 'live_test', {}, None)
         self.call.ws = Mock()
@@ -46,11 +48,14 @@ class LiveTests(unittest.TestCase):
             self.call.answer(0,'کی گل‌ها را آب بدهم؟',[], 'task_1')
         self.assertEqual(order,['retrieve','reply'])
         self.assertEqual(self.call.audit[0]['passages'],passages)
-        self.assertIn('task_1',self.call.ws.send.call_args.args[0])
+        self.assertEqual(self.call.pending_speech['reply'],'طبق راهنمای مراقب، صبح.')
+        self.call.ws.send.assert_not_called()
 
     def test_typed_followup_retains_latest_exchange(self):
         self.call.input_text='نه موسیقی دوست ندارم. انتخاب دیگر چیست؟'
         self.call.output_text='طبق راهنمای مراقب به عکس گل‌ها نگاه کنید.'
+        self.call.pending_speech={'version':0,'transcript':self.call.input_text,'reply':self.call.output_text}
+        self.call.release_speech(0);self.call.played(0)
         self.call.typed('لطفاً همان انتخاب را دوباره بگو.')
         self.assertEqual(self.call.history[-1]['content'],'طبق راهنمای مراقب به عکس گل‌ها نگاه کنید.')
         self.assertEqual(self.call.history[-2]['role'],'user')
@@ -58,7 +63,7 @@ class LiveTests(unittest.TestCase):
     def test_medical_guardrail_not_repeated_for_every_fragment(self):
         for i, word in enumerate(['قرصم', ' را', ' دو برابر کنم؟']):
             self.call.on_event({'type':'session.input_transcript.delta','event_id':str(i),'delta':word,'start_ms':i*200,'end_ms':i*200+200})
-        self.assertEqual(self.call.ws.send.call_count,1)
+        self.assertEqual(self.call.ws.send.call_count,0)
 
     def test_end_and_new_input_discard_late_answers(self):
         with patch('live_call.retrieve_for_turn',return_value=[]),patch('live_call.generate_reply',return_value=('سلام','ordinary',{'kind':'general'})):
@@ -78,7 +83,8 @@ class LiveTests(unittest.TestCase):
     def test_backend_failure_does_not_fabricate_result(self):
         with patch('live_call.retrieve_for_turn',side_effect=RuntimeError('private content')):
             self.call.answer(0,'hello',[],None)
-        self.assertEqual(self.call.error,'backend_unavailable')
+        self.assertEqual(self.call.warning,'backend_unavailable')
+        self.assertIsNone(self.call.error)
         self.assertNotIn('private content',str(self.call.ws.send.call_args))
         self.assertFalse(self.call.audit)
 
@@ -92,6 +98,37 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(client.live.create.call_args.kwargs['transport']['sdp'],'v=0\r\n')
         self.assertEqual(set(response.json),{'token','session','transport'})
         for call in calls.values():call.executor.shutdown(wait=True)
+
+    def test_interruption_invalidates_old_work_and_holds_new_speech(self):
+        self.call.input_text='برای استراحت چه کار کنم؟';self.call.output_text='به موسیقی گوش کنید'
+        self.call.interrupt();self.assertTrue(self.call.interrupted)
+        self.assertFalse(self.call.history)
+        self.call.ws.send.reset_mock()
+        with patch('live_call.retrieve_for_turn',return_value=[]),patch('live_call.generate_reply',return_value=('به عکس گل‌ها نگاه کنید','ordinary',{'kind':'general'})):
+            self.call.answer(0,'old',[],None)
+            self.assertIsNone(self.call.pending_speech)
+            self.call.version+=1
+            self.call.answer(self.call.version,'نه موسیقی نمی‌خواهم',[],None)
+        self.call.ws.send.assert_not_called()
+        self.assertFalse(self.call.release_speech(0))
+        self.assertTrue(self.call.release_speech(self.call.version))
+        self.assertFalse(self.call.interrupted)
+        self.assertFalse(self.call.history)
+        self.call.played(self.call.version)
+        self.assertEqual(self.call.history[-1]['content'],'به عکس گل‌ها نگاه کنید')
+        self.call.played(self.call.version);self.assertEqual(len(self.call.history),2)
+
+    def test_command_rejection_keeps_session_and_context(self):
+        self.call.input_text='برای استراحت چه کار کنم؟'
+        self.call.on_event({'type':'error','error':{'code':'unknown_parameter','message':'private'}})
+        self.assertIsNone(self.call.error)
+        self.assertEqual(self.call.warning,'command_rejected')
+        self.assertFalse(self.call.closed.is_set())
+        calls['capability']=self.call
+        response=app.app.test_client().post('/live/retry',json={'token':'capability'})
+        self.assertEqual(response.status_code,204)
+        self.assertIsNone(self.call.warning)
+        self.assertEqual(self.call.input_text,'برای استراحت چه کار کنم؟')
 
     def test_routes_use_capability_and_reject_foreign_origin(self):
         web=app.app.test_client()

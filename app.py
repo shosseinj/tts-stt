@@ -18,6 +18,8 @@ app = Flask(__name__, static_folder="tts_fronted", static_url_path="/static",
             template_folder="tts_fronted")
 # Leave room for multipart headers below the API's 25 MB upload limit.
 app.config["MAX_CONTENT_LENGTH"] = 25_000_000
+# Keep local template edits aligned with freshly served JavaScript, even with debug off.
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 MAX_AUDIO_BYTES = 24_000_000
 AUDIO_TYPES = {
     ".wav": "audio/wav", ".mp3": "audio/mpeg", ".mpeg": "audio/mpeg",
@@ -159,7 +161,9 @@ def speech_to_text():
 
 @app.get("/call")
 def call_page():
-    return render_template("call.html")
+    response = app.make_response(render_template("call.html", call_asset_version=(Path(app.static_folder) / "conversation.js").stat().st_mtime_ns))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.post("/documents")

@@ -1,3 +1,4 @@
+import os
 """Opt-in, billable synthetic Persian WebRTC vs chained evaluation. No patient data.
 Run with the Flask server up: .bootstrap/bin/python tests/evaluate_live.py --live
 Artifacts contain ONLY the synthetic examples below, stored in ignored .cache/live-eval.
@@ -11,7 +12,7 @@ import urllib.request
 from playwright.sync_api import sync_playwright
 
 ROOT=Path(__file__).resolve().parents[1]
-URL='http://127.0.0.1:5000'
+URL=os.environ.get('TEST_BASE_URL','http://127.0.0.1:5000')
 CASES=[
     ('document','طبق راهنما، برای استراحت چه کار کنم؟'),
     ('personal','اسم دختر من چیست؟'),

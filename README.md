@@ -99,9 +99,13 @@ The browser retains the existing routes and transcription response field. The in
 
 Select **گفت‌وگو با دستیار** to open **http://127.0.0.1:5000/call**. Press **شروع تماس** to connect. No microphone access or audio transmission occurs before Start; microphone tracks stay disabled until the voice session and backend sideband are ready. The browser exchanges its SDP offer through Flask; only Flask authenticates to OpenAI. No permanent or ephemeral API key reaches the browser.
 
-The call uses **`gpt-live-1` over WebRTC**, including simultaneous listening/speaking and voice interruptions. Mute disables the local microphone track and sends the Live input-mute command. End stops capture/playback immediately, requests provider session closure, allows up to five seconds for finalization, clears local transcript/profile, and removes the document. A failed transport cannot confirm final usage. Closing or hiding the tab stops the call. Calls are capped at 15 minutes; an abandoned browser heartbeat expires after 40 seconds.
+The call uses **`gpt-live-1` over WebRTC for live Persian input** and the server's existing **`gpt-4o-mini-tts`** for each checked answer. Autonomous Live output is never attached to a speaker or inserted into history. This deliberate application-controlled playback avoids spoken waiting phrases, paraphrased quotations and competing answers. It adds backend/TTS latency; waiting is displayed on screen. Separate `/stt` and `/tts` remain available.
 
-The transcript contains actual Live input/output transcript fragments, grouped independently by speaker and their provider timestamps. Overlapping speech can update both speakers' bubbles; this is not a strict turn-by-turn chat. A typed message option (600 characters) is available, including with denied microphone permission. Typed-only calls send a locally generated near-silent media clock, not microphone audio, because a receive-only connection stalled Live context delivery in testing. **Clear** also closes the provider session, so the next Start has no prior voice context. A new session must be started after a disconnect; there is no silent model fallback.
+Mute disables the microphone track and sends the Live input-mute command. Speaking during an answer pauses its local audio immediately after voice detection; stale server work is discarded. End stops capture/playback, requests provider closure, allows up to five seconds for finalization, clears the caregiver profile and removes the document. **History is cleared by default.** The explicit **نگه‌داری تاریخچه پس از پایان تماس در این مرورگر** checkbox opts into local persistence. Only completed user/assistant exchanges are retained (up to 500 messages), and at most the latest ten exchanges seed the next call. Interrupted answers, UI status and duplicate events are excluded from model history. Saved text is readable by other users of the same browser profile; Clear ends the session and deletes it. Unchecking retention removes the saved copy immediately. TXT download remains available independently.
+
+The visible transcript includes streaming recognized input and each checked answer, with interrupted answers labeled. An audio-ended receipt commits a completed exchange on the server and browser; duplicate receipts are idempotent. Long and growing bubbles follow the latest text. Scrolling upward deliberately pauses following; **رفتن به تازه‌ترین پیام** resumes it. Typed messages (up to 600 characters) work even when microphone permission is denied. No audio is captured before Start. A near-silent local media clock maintains WebRTC during mute/typed-only use without microphone content.
+
+Temporary status-fetch failures retry without clearing text; a dropped WebRTC connection has a 15-second recovery window. Hiding the tab mutes input and pauses playback; closing it ends the call. Calls are capped at 15 minutes, with an abandoned browser heartbeat expiring after 120 seconds. A disconnected call may be restarted with completed exchanges still in the tab. Provider voice time remains billable while muted or waiting; End unused calls.
 
 The optional caregiver section accepts a preferred name (80 characters), trusted contacts (600), orientation facts (1,000), and routine (1,000). Configure these before Start using verified facts. A home address is not evidence of current location; routine is not an appointment or medication schedule.
 
@@ -119,13 +123,15 @@ Documents are held in this server process's RAM for up to two hours, with a maxi
 
 The server creates `gpt-live-1` with `store=False`, voice `marin`, client delegation, and restricted browser event permissions. It attaches a private authenticated sideband WebSocket to the same session. The browser may mute/unmute or close; it cannot replace instructions or inject backend results. The backend text model remains `gpt-4.1-mini` (optional server `CONVERSATION_MODEL` override). Separate `/tts` and `/stt` keep their existing models and WAV/upload contracts.
 
-For each recognized input, the backend first retrieves document passages, then applies the existing deterministic safety checks and structured text-model policy in `conversation.py`. Results go back through `session.commentary.append`. The Live prompt requires delegation before substantive answers; while waiting it may only give a brief acknowledgment. Medication, urgent, lost, and distress inputs are redirected to caregiver/clinician or emergency guidance. No contact, messaging, location lookup, or other external action is available.
+For each recognized input, the backend retrieves document passages first, applies safety rules and generates a concise final reply. The reply is rendered to a validated WAV once and delivered through `/live/play`; only completion of that clip records the exchange. Results whose input version has changed are discarded. Live receives completed exchanges as quiet context, never as a command to speak again. Medication, urgent, lost and distress questions receive caregiver/clinician or emergency guidance. No contact or other external action is performed.
 
-Transcript deltas are fragments, not finalized turns. The agent waits briefly for additional input, keeps up to three recent exchanges for the backend (GPT-Live retains its own active-call context), and drops obsolete results when new fragments arrive or the call ends. Corrections, pauses, overlapping speech, and transcription mistakes still require testing. The **caregiver inspection panel** exposes the last 12 backend checks: recognized input, retrieved excerpts, source classification, and prepared answer. The main transcript shows what the Live model actually said, which can paraphrase or differ from the backend answer.
+Input transcript deltas are not finalized turns: the agent uses a 1.2-second quiet debounce and the browser waits for local voice activity to stop before playback. Long pauses, weak/noisy microphones and echo can still split or interrupt a turn incorrectly. Voice detection uses three 25 ms samples above an RMS threshold, with browser echo cancellation. This is not a clinical speech detector. Headphones help avoid speaker echo. The caregiver panel exposes the last 12 checks: recognized input, retrieved passages and generated reply, without default logging.
 
-**Safety boundary:** the Live speech model can speak independently and asynchronously. Prompting and transcript-triggered redirection are not a guarantee that every spoken word has been checked before playback. This version does not buffer and approve every audio segment. It is supportive conversation software, not clinical care, supervision, emergency detection, or a replacement for a caregiver. Test with a caregiver before patient use; do not rely on it for medication decisions, location, or emergency help.
+Answers are instructed to be short and direct, without repeating requests, promises to answer, waiting phrases or unsolicited follow-up questions. A small checked, public-domain Shahnameh snapshot in `poetry.py` contains three opening couplets from [Ganjoor, Shahnameh, opening section](https://ganjoor.net/ferdousi/shahname/aghaz/sh1), verified on 2026-09-28. Supported requests return the actual verse with a source link, and “همان شعر” uses completed history. Unsupported named passages are declined instead of invented. This is a limited quotation collection, not a full Shahnameh search engine; caregiver uploads do not establish authorship. General creative poems must be labeled as original, not attributed to a real poet.
 
-The WebRTC path requires microphone permission, localhost/HTTPS, browser WebRTC support, model access, API billing, and a network that allows the negotiated media connection. Voice time is billable even during silence/mute; backend model usage is additional. End unused calls. If autoplay is blocked, use the playback button.
+**Safety boundary:** only the checked text is sent to the separate TTS renderer. Rendering still uses a generative speech service and does not prove perfect pronunciation or word-for-word acoustic fidelity. The app is supportive conversation software, not clinical care, supervision, emergency detection or a replacement for a caregiver. Test natural speech and playback with a caregiver before patient use.
+
+The WebRTC path requires microphone permission, localhost/HTTPS, browser WebRTC support, model access, API billing, and a network that allows the negotiated media connection. Voice time is billable even during silence/mute; backend text-model and TTS usage are additional. End unused calls. If autoplay is blocked, use the playback button.
 
 References: [GPT-Live WebRTC](https://developers.openai.com/api/docs/guides/voice-webrtc), [client delegation](https://developers.openai.com/api/docs/guides/live-delegation), [server controls and playback limits](https://developers.openai.com/api/docs/guides/voice-server-controls), [Alzheimer's communication guidance](https://www.alz.org/help-support/caregiving/daily-care/communications).
 
@@ -135,9 +141,13 @@ References: [GPT-Live WebRTC](https://developers.openai.com/api/docs/guides/voic
 
 Live endpoints (JSON, same-origin browser requests):
 
-- `POST /live/session`: SDP offer, optional profile/document ID → SDP answer and opaque call capability.
+- `POST /live/session`: SDP offer, optional profile/document ID and up to 20 alternating completed history messages → SDP answer and opaque call capability.
 - `POST /live/status`: call capability → backend readiness and bounded caregiver diagnostics.
 - `POST /live/text`: capability and typed message → server agent work.
+- `POST /live/interrupt`: capability → invalidate old work and unfinished playback.
+- `POST /live/play`: capability and current version → checked reply, source and base64 WAV; stale versions return 409.
+- `POST /live/played`: capability and version → idempotent completion receipt that commits history.
+- `POST /live/retry`: capability → retry failed backend work explicitly.
 - `POST /live/end`: capability → idempotent session closure.
 
 Call capabilities stay in tab memory and travel in request bodies. Backend transcripts, profile, and diagnostics are held only for the active call and erased on cleanup. At most four calls can exist per development-server process. This is a localhost application; add authentication and deployment controls before remote use.
@@ -160,7 +170,9 @@ Data sent to OpenAI by the retained chained endpoints:
 | Text reply | The current transcript/typed message, up to three recent exchanges, optional caregiver fields, up to three retrieved document excerpts (including document title), and fixed behavior instructions |
 | Speech synthesis | The assistant's Persian reply and speaking-style instructions |
 
-For Live calls, microphone audio streams directly to OpenAI, transcripts are received by the backend, and relevant document excerpts/profile/history go to the backend text model. Its answer returns to GPT-Live for speech. The full document stays local. History/profile exist in active browser/server memory only: no browser storage, cookies, database, or persistent session history. The server and does not log transcripts, audio, profile contents, keys, or raw provider errors. Ordinary development-server access logs include only request metadata. Werkzeug may spool multipart uploads to temporary files while parsing larger requests; the app does not retain uploads or use their filenames as paths.
+For Live calls, microphone audio goes directly to OpenAI. The backend receives transcripts; the text model receives the current message, up to ten completed exchanges, optional profile and retrieved excerpts. The final reply goes to the TTS API. Completed exchanges are also appended quietly to the Live context. The full caregiver document remains local. API credentials and call capabilities are never persisted in browser storage. By default, history exists only in active memory and End/page close clears it. Opt-in retention stores only completed text exchanges in this browser's localStorage, not audio, profile, document, API key or diagnostics. There is no server database or account synchronization.
+
+The server does not log transcripts, audio, profile contents, keys or raw provider errors. Development access logs contain request metadata. Werkzeug may spool larger multipart uploads temporarily; uploaded files are not retained by the app.
 
 Responses requests set **`store=False`**, with no provider conversation IDs or prior-response links. This disables Responses application-state storage, **not necessarily all provider retention**: abuse-monitoring logs and account-specific data policies can still apply. Clearing the page does not delete provider-held data. See [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data). The optional caregiver profile is not a secure multi-user record system; keep this development app on localhost.
 
@@ -189,17 +201,17 @@ The UI test also covers desktop/tablet/mobile widths, server settings, edited tr
 
 Conversation tests use mocked SDK requests to exercise typed/audio turns, bounded history, profile forwarding, storage settings, deterministic safety responses, model-classified risks, unsafe output fallback, missing keys, input validation, and provider failures. Document tests cover review attestation, limits, Persian normalization, retrieval and citations, unmatched general conversation, medical fallback with a document, fabricated citation rejection, and removal/expiry.
 
-The call browser test mocks WebRTC/API events to check no microphone access before Start, independent overlapping transcript updates and deduplication, mute/unmute, full-duplex microphone behavior, clear/End, late-event rejection, denied-microphone typed fallback, and mobile layout. These tests establish application behavior, not physical-microphone performance, real Persian turn detection, factual accuracy, or clinical safety.
+The call browser test mocks WebRTC/API events to cover no microphone access before Start, duplicate input suppression, exclusion of autonomous output, exactly one completed clip per version, interruption, history default-clear and opt-in persistence/reload, bounded next-call context, transcript growth and deliberate scrolling, transient fetch recovery, denied-microphone typing and mobile layout. Backend tests cover idempotent completion, interrupted/obsolete output exclusion, source-checked poetry and follow-up references. These do not establish physical-microphone accuracy or clinical safety.
 
 ## Complete live verification
 
 For the opt-in billable comparison with synthetic Persian audio and a synthetic document:
 
 ```bash
-.bootstrap/bin/python tests/evaluate_live.py --live
+TEST_BASE_URL=http://127.0.0.1:5000 .bootstrap/bin/python tests/evaluate_call_flow.py --live
 ```
 
-It compares `/conversation` against actual browser WebRTC, saving synthetic input/output and retrieval evidence under ignored `.cache/live-eval/`. This script deliberately persists **only its built-in test examples**; normal patient calls are not logged. See `LIVE_EVALUATION.md` for results and limitations.
+It tests three actual multi-turn browser calls: source-checked poetry/repetition/meaning, document choices and follow-up, and medical fallback/personal uncertainty. It saves synthetic input/output and retrieval evidence under ignored `.cache/live-eval/`. `evaluate_live.py` retains the earlier paired comparison with `/conversation`; its fixed-duration waits are exploratory, not assertions of playback completion. This script deliberately persists **only its built-in test examples**; normal patient calls are not logged. See `LIVE_EVALUATION.md` for results and limitations.
 
 
 After starting the server with your key, run:
@@ -266,3 +278,7 @@ printf '\n'
 ```
 
 Open **http://127.0.0.1:5000/call** (or your chosen port).
+
+### If transcription stops after its first word
+
+Restart `./run.sh`, open `http://127.0.0.1:5000/call`, and hard-refresh with **Ctrl+Shift+R** after code updates. An older running process previously served a cached HTML template alongside newer JavaScript, causing missing-element errors that were mislabeled as invalid service messages. The call page now reloads template changes, disables HTML caching and versions its script URL. Python/backend edits still require a server restart.
