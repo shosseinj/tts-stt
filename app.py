@@ -12,7 +12,7 @@ from openai import (
 )
 from werkzeug.exceptions import HTTPException, BadRequest, BadGateway, RequestEntityTooLarge
 from documents import upload_document, remove_document, retrieve_for_turn
-from conversation import clean_text, validate_context, generate_reply, MAX_MESSAGE
+from conversation import clean_text, validate_context, generate_reply, MAX_MESSAGE, conversation_model
 
 app = Flask(__name__, static_folder="tts_fronted", static_url_path="/static",
             template_folder="tts_fronted")
@@ -212,7 +212,7 @@ def converse():
                 raise BadRequest("Please use a shorter message (at most 2000 characters).")
         passages = retrieve_for_turn(data.get("document_id"), transcript, history)
         reply, category, source = generate_reply(client, transcript, history, profile,
-                                                os.environ.get("CONVERSATION_MODEL", "gpt-4.1-mini"), passages)
+                                                conversation_model(), passages)
         audio_error = None
         try:
             speech = base64.b64encode(synthesize_audio(client, reply, supportive=True)).decode("ascii")

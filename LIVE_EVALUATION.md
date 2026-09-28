@@ -76,3 +76,7 @@ The user's port-5000 process was still serving its cached older Jinja template w
 Fixed by restarting the main server with matching code, enabling template auto-reload for this local development app, adding a script version URL and `no-store` to the call page, and separating JSON parsing from UI-event handling. A malformed packet now leaves the call active; a UI processing failure requests a hard refresh rather than claiming that provider JSON was invalid. No further live API tests were started after the user requested fewer tests. The final focused browser regression uses mocked APIs.
 
 The separate real HTTP `/tts` and `/stt` smoke test also passed: WAV MIME/bytes agreed and the returned transcription was “سلام، امروز هوا خوب است.”
+
+## Subsequent answer-model upgrade
+
+The default answer model was changed from `gpt-4.1-mini` to `gpt-6-astra`, with low reasoning effort, low verbosity and a 1–2 sentence / normally 35-word prompt. Both call and chained endpoints use the shared default; explicit legacy environment overrides remain supported. The results above were measured **before this model upgrade** and must not be attributed to Astra. Only mocked SDK request checks were run for the upgrade, as requested; no new accuracy improvement or account access is claimed.

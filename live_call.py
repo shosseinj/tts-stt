@@ -13,7 +13,7 @@ from flask import Blueprint, jsonify, request
 from werkzeug.exceptions import BadRequest, BadGateway, Forbidden, NotFound, ServiceUnavailable
 from websockets.sync.client import connect
 
-from conversation import validate_context, clean_text, generate_reply, safety_category, REPLIES, MAX_MESSAGE
+from conversation import validate_context, clean_text, generate_reply, safety_category, REPLIES, MAX_MESSAGE, conversation_model
 from documents import retrieve, retrieve_for_turn
 
 LIVE_HISTORY = 20
@@ -157,7 +157,7 @@ class LiveCall:
             passages = retrieve_for_turn(self.document_id, transcript, history)
             reply, category, source = generate_reply(
                 self.client, transcript, history, self.profile,
-                os.environ.get('CONVERSATION_MODEL', 'gpt-4.1-mini'), passages)
+                conversation_model(), passages)
             # Render the checked answer once. Autonomous Live audio is never played.
             with self.lock:
                 if self.closing or self.closed.is_set() or version != self.version:
