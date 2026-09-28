@@ -98,6 +98,6 @@ def main():
                 page.evaluate('endCall()');page.wait_for_timeout(5500);context.close()
             results.append(row);(folder/(f'{args.case}-results.json' if args.case else 'results.json')).write_text(json.dumps(results,ensure_ascii=False,indent=2))
         browser.close()
-    print('Synthetic results:',folder/'results.json')
+    print('Synthetic results:',folder/(f'{args.case}-results.json' if args.case else 'results.json'))
 
 if __name__=='__main__':main()

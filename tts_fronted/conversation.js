@@ -2,7 +2,7 @@
 const el = id => document.getElementById(id);
 let callActive = false, callMuted = false, callBusy = false, callPhase = 'idle', callEpoch = 0;
 let callStream = null, peer = null, events = null, callToken = null, pollTimer = null, startupTimer = null;
-let speechStatusTimer=null;
+let speechStatusTimer=null, silentClock=null;
 let sessionStarted = false, backendReady = false, transcriptGroups = [], transcriptSeen = new Set();
 let documentId = null, documentBusy = false, documentEpoch = 0;
 const profileFields = {preferred_name:'profileName', trusted_contacts:'profileContacts', orientation_facts:'profileFacts', routine:'profileRoutine'};
@@ -97,7 +97,16 @@ async function startCall() {
         };
         pc.onconnectionstatechange=()=>{if(epoch===callEpoch && callActive && ['failed','disconnected'].includes(pc.connectionState)){callError('ارتباط صوتی قطع شد. دوباره تماس را شروع کنید.');endCall(false);}};
         if(callStream) callStream.getTracks().forEach(t=>pc.addTrack(t,callStream));
-        else pc.addTransceiver('audio',{direction:'recvonly'});
+        else {
+            // GPT-Live's timeline needs ongoing input media even for typed-only calls.
+            // This locally generated near-silent clock contains no microphone audio.
+            const context=new AudioContext(), destination=context.createMediaStreamDestination();
+            const oscillator=context.createOscillator(), gain=context.createGain();
+            oscillator.frequency.value=20;gain.gain.value=.0001;
+            oscillator.connect(gain).connect(destination);oscillator.start();
+            silentClock={context,oscillator,stream:destination.stream};await context.resume();
+            destination.stream.getTracks().forEach(t=>pc.addTrack(t,destination.stream));
+        }
         const dc=pc.createDataChannel('oai-events');events=dc;
         dc.onmessage=e=>{try{handleLiveEvent(JSON.parse(e.data),epoch);}catch(_){if(epoch===callEpoch){callError('پیام نامعتبر از سرویس تماس دریافت شد.');endCall(false);}}};
         dc.onclose=()=>{if(callActive && epoch===callEpoch){callError('کانال تماس بسته شد.');endCall(false);}};
@@ -140,6 +149,7 @@ function endCall(clear=true) {
     callActive=false;callEpoch++;callBusy=false;backendReady=false;sessionStarted=false;
     clearTimeout(pollTimer);clearTimeout(startupTimer);clearTimeout(speechStatusTimer);
     callStream?.getTracks().forEach(t=>t.stop());callStream=null;
+    if(silentClock){silentClock.oscillator.stop();silentClock.stream.getTracks().forEach(t=>t.stop());silentClock.context.close().catch(()=>{});silentClock=null;}
     el('replyAudio').pause();el('replyAudio').srcObject=null;el('resumeCall').hidden=true;
     const dc=events,pc=peer;events=null;peer=null;
     // Keep the transport briefly for session.closed while microphone/playback stop now.
