@@ -1,3 +1,5 @@
+> Historical results below describe earlier call implementations. The current GPT-Live-only native voice path has mocked coverage but has not been live-evaluated. These results do not establish its latency or answer relevance.
+
 # Persian call evaluation — 2026-09-28
 
 ## Final behavior and evidence

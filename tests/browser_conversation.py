@@ -5,10 +5,6 @@ import io
 import wave
 from playwright.sync_api import sync_playwright
 BASE_URL=os.environ.get('TEST_BASE_URL','http://127.0.0.1:5000')
-buf=io.BytesIO()
-with wave.open(buf,'wb') as audio:
-    audio.setnchannels(1);audio.setsampwidth(2);audio.setframerate(24000);audio.writeframes(b'\x00\x00'*24000*30)
-WAV=base64.b64encode(buf.getvalue()).decode()
 FAKE_RTC='''
 window.micRequests=0;const original=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
 navigator.mediaDevices.getUserMedia=(...args)=>{micRequests++;return original(...args);};
@@ -16,9 +12,9 @@ window.sentEvents=[];window.testMicRms=0;
 AnalyserNode.prototype.getFloatTimeDomainData=function(array){array.fill(testMicRms)};
 window.RTCPeerConnection=class {
  constructor(){window.testPeer=this;this.connectionState='new';}
- addTrack(){} createDataChannel(){this.dc={readyState:'open',send:e=>sentEvents.push(JSON.parse(e)),close(){this.readyState='closed';}};return this.dc;}
+ addTrack(track,stream){if(!this.stream)this.stream=stream;} createDataChannel(){this.dc={readyState:'open',send:e=>sentEvents.push(JSON.parse(e)),close(){this.readyState='closed';}};return this.dc;}
  async createOffer(){return {type:'offer',sdp:'test-offer'};} async setLocalDescription(){}
- async setRemoteDescription(){this.connectionState='connected';this.emit({type:'session.started'});}
+ async setRemoteDescription(){this.connectionState='connected';this.ontrack({streams:[this.stream]});this.emit({type:'session.started'});}
  emit(e){this.dc.onmessage({data:JSON.stringify(e)});} close(){this.connectionState='closed';}
 };
 '''
@@ -36,7 +32,7 @@ with sync_playwright() as p:
         target.route('**/live/status',lambda r:r.fulfill(json={'ready':True,'closed':False,'working':False,'error':None,'audit':[]}))
         for path in ('retry','interrupt','text'):
             target.route('**/live/'+path,lambda r:r.fulfill(status=204))
-        target.route('**/live/play',lambda r:r.fulfill(json={'version':r.request.post_data_json['version'],'transcript':'یک شعر کوتاه بخوان','reply':'به نام خداوند جان و خرد\nکز این برتر اندیشه برنگذرد','source':{'kind':'reference','citations':[]},'audio_mime':'audio/wav','audio_base64':WAV}))
+        target.route('**/live/play',lambda r:r.fulfill(json={'version':r.request.post_data_json['version'],'transcript':'یک شعر کوتاه بخوان','reply':'به نام خداوند جان و خرد\nکز این برتر اندیشه برنگذرد','source':{'kind':'reference','citations':[]},'native_live':True}))
         target.route('**/live/played',lambda r:(receipts.append(r.request.post_data_json),r.fulfill(status=204)))
         target.route('**/live/end',lambda r:(ends.append(r.request.post_data_json),r.fulfill(status=204)))
     configure(page);page.goto(BASE_URL+'/call')
@@ -53,9 +49,9 @@ with sync_playwright() as p:
     assert page.evaluate('conversationHistory()')==[]
     page.evaluate('lastVoiceAt=-10000;releaseInterruptedReply(1,callEpoch)');page.wait_for_function('playingReply!==null')
     assert page.evaluate('callStream.getAudioTracks().every(t=>t.enabled)')
-    page.evaluate("document.getElementById('replyAudio').pause();document.getElementById('replyAudio').onended()")
+    page.evaluate("setNativeTranscript('پاسخ آزمایشی.');finishNativeReply(callEpoch)")
     page.wait_for_function('completedHistory.length===2')
-    page.evaluate("document.getElementById('replyAudio').onended()")
+    page.evaluate("finishNativeReply(callEpoch)")
     assert len(receipts)==1 and page.evaluate('conversationHistory().length')==2
     page.evaluate('releaseInterruptedReply(1,callEpoch)')
     assert page.locator('#callTranscript li.assistant').count()==1
@@ -67,11 +63,11 @@ with sync_playwright() as p:
     emit('input','یک شعر کوتاه بخوان','u2')
     page.evaluate('lastVoiceAt=-10000;releaseInterruptedReply(2,callEpoch)');page.wait_for_function('playingReply!==null')
     page.route('**/live/played',lambda r:r.abort('failed'))
-    page.evaluate("document.getElementById('replyAudio').pause();document.getElementById('replyAudio').onended()")
-    page.wait_for_function("completedHistory.length===2 && pauseKind==='receipt'")
+    page.evaluate("setNativeTranscript('پاسخ آزمایشی.');finishNativeReply(callEpoch)")
+    page.wait_for_function("completedHistory.length===0 && !nativeFinishBusy")
     page.unroute('**/live/played');page.route('**/live/played',lambda r:r.fulfill(status=204))
-    page.locator('#resumeCall').click();page.wait_for_function('!callPaused && pendingReceipt===null')
-    assert page.locator('#replyAudio').evaluate('(n)=>n.paused')
+    page.evaluate('finishNativeReply(callEpoch)');page.wait_for_function('completedHistory.length===2')
+    assert page.locator('#replyAudio').evaluate('(n)=>n.muted')
     page.locator('#endCall').click();page.reload();page.wait_for_timeout(200)
     assert page.evaluate('micRequests')==0 and page.locator('#callTranscript li').count()==2
     page.locator('#startCall').click();page.wait_for_function('backendReady')
@@ -80,7 +76,7 @@ with sync_playwright() as p:
     emit('input','درخواست تازه','u3',5000)
     page.evaluate('lastVoiceAt=-10000;releaseInterruptedReply(3,callEpoch)');page.wait_for_function('playingReply!==null')
     page.evaluate('testMicRms=.08')
-    page.wait_for_function('bargeWaiting && !playingReply && document.getElementById("replyAudio").paused',timeout=1000)
+    page.wait_for_function('bargeWaiting && !playingReply && document.getElementById("replyAudio").muted',timeout=1000)
     page.evaluate('testMicRms=0');assert page.evaluate('completedHistory.length')==2
     assert page.locator('[data-incomplete="true"]').count()==1
     page.locator('#muteCall').click();assert page.evaluate('callStream.getAudioTracks().every(t=>!t.enabled)')

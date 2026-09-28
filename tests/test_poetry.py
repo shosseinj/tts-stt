@@ -30,9 +30,9 @@ class PoetryTests(unittest.TestCase):
             call.typed('یک بیت از شاهنامه بخوان');call.answer(call.version,call.input_text,[],None)
             v=call.version;call.release_speech(v)
             self.assertEqual(call.history,[])
-            call.played(v);call.played(v);self.assertEqual(len(call.history),2)
+            call.on_event({'type':'session.output_transcript.delta','delta':COUPLETS[0]+'.'});call.last_output=0;call.played(v);call.played(v);self.assertEqual(len(call.history),2)
             call.typed('همان شعر را دوباره بخوان');call.answer(call.version,call.input_text,call.history,None)
-            self.assertEqual(call.pending_speech['reply'],COUPLETS[0])
+            self.assertEqual(call.pending_speech['context']['fixed_reply'],COUPLETS[0])
             v=call.version;call.release_speech(v);call.interrupt()
             self.assertFalse(call.played(v));self.assertEqual(len(call.history),2)
 

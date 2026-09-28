@@ -1,13 +1,15 @@
 // GPT-Live WebRTC: API credentials and configuration authority stay on Flask.
 const el = id => document.getElementById(id);
+// Native Live speech pace is set in the server instructions.
 let callActive = false, callMuted = false, callBusy = false, callPhase = 'idle', callEpoch = 0;
 let callStream = null, peer = null, events = null, callToken = null, pollTimer = null, startupTimer = null;
 let silentClock=null, disconnectTimer=null;
+let remoteStream=null, remoteAnalyser=null, nativeTimer=null, lastRemoteVoiceAt=0, nativeFinishBusy=false;
 let vadTimer=null, lastVoiceAt=0, bargeWaiting=false, releaseBusy=false, sessionBaseMs=0;
 let callPaused=false, pauseKind=null, pollFailures=0, lastWarningId=0, followTranscript=true;
 let sessionStarted = false, backendReady = false, transcriptGroups = [], transcriptSeen = new Set();
-let receivedReplyVersions=new Set(), pendingReceipt=null;
-let completedHistory=[], playingReply=null, playbackUrl=null, replyGeneration=0;
+let receivedReplyVersions=new Set();
+let completedHistory=[], playingReply=null, replyGeneration=0;
 let documentId = null, documentBusy = false, documentEpoch = 0;
 const profileFields = {preferred_name:'profileName', trusted_contacts:'profileContacts', orientation_facts:'profileFacts', routine:'profileRoutine'};
 function setCallState(phase, text, hint='') { callPhase=phase; el('callState').textContent=text; el('callHint').textContent=hint; updateCallControls(); }
@@ -68,8 +70,12 @@ function handleLiveEvent(event,epoch=callEpoch) {
     if(!callActive || epoch!==callEpoch) return;
     if(event.type==='session.started') { sessionStarted=true; enableListening(); }
     else if(event.type==='session.input_transcript.delta' || event.type==='session.output_transcript.delta') {
-        // Live handles input; only checked, rendered backend answers are audible.
-        if(event.type==='session.output_transcript.delta') return;
+        if(event.type==='session.output_transcript.delta'){
+            if(playingReply?.native_live && !bargeWaiting && !transcriptSeen.has(event.event_id)){
+                transcriptSeen.add(event.event_id);setNativeTranscript(playingReply.spoken + event.delta);
+            }
+            return;
+        }
         if(playingReply) interruptCall();
         transcriptEvent(event);
         setCallState('listening','در حال گوش دادن');
@@ -95,6 +101,7 @@ async function pollBackend(epoch) {
             callPaused=false;pauseKind=null;backendReady=true;callError();el('resumeCall').hidden=true;enableListening();
             if(playingReply)el('replyAudio').play().catch(()=>{el('resumeCall').hidden=false;});
         }
+        if(playingReply?.native_live && status.speaking_version===playingReply.version && status.spoken_text?.length>playingReply.spoken.length)setNativeTranscript(status.spoken_text);
         if(status.pending_speech!==null && status.pending_speech!==undefined) releaseInterruptedReply(status.pending_speech,epoch);
         if(status.closed || status.error) {callError('ارتباط اصلی تماس پایان یافت. متن محفوظ است؛ برای ادامه تماس تازه‌ای شروع کنید.');endCall(false);return;}
         if(status.warning && status.warning_id!==lastWarningId) {
@@ -107,7 +114,7 @@ async function pollBackend(epoch) {
         el('agentAudit').textContent=(status.audit || []).map(a=>
             'گفتار تشخیص‌داده‌شده: '+a.recognized_input+'\n'+
             'بخش‌های بازیابی‌شده: '+(a.passages.map(p=>p.title+' / '+p.id+': '+p.text).join('\n') || 'مورد مرتبطی پیدا نشد')+'\n'+
-            'پاسخ آماده‌شده در سرور ('+a.source.kind+'): '+a.reply).join('\n\n────────\n\n');
+            'گفتار ثبت‌شدهٔ دستیار ('+a.source.kind+'): '+a.reply).join('\n\n────────\n\n');
     } catch(error) {
         if(epoch!==callEpoch || !callActive) return;
         pollFailures++;
@@ -134,9 +141,14 @@ async function startCall() {
             callMuted=true;callError('میکروفون در دسترس نیست یا اجازه داده نشده است؛ پس از اتصال می‌توانید پیام بنویسید.');
         }
         const pc=new RTCPeerConnection(); peer=pc;
-        // Never attach autonomous Live output to a speaker. The backend renders
-        // one checked clip; onended, rather than transcript timing, commits history.
-        pc.ontrack=()=>{};
+        pc.ontrack=event=>{
+            if(epoch!==callEpoch)return;
+            remoteStream=event.streams[0] || new MediaStream([event.track]);
+            const audio=el('replyAudio');audio.srcObject=remoteStream;audio.muted=true;
+            audio.play().catch(()=>{el('resumeCall').hidden=false;});
+            remoteAnalyser=silentClock.context.createAnalyser();remoteAnalyser.fftSize=1024;
+            silentClock.context.createMediaStreamSource(remoteStream).connect(remoteAnalyser);
+        };
         pc.onconnectionstatechange=()=>{
             if(epoch!==callEpoch || !callActive) return;
             if(pc.connectionState==='connected'){clearTimeout(disconnectTimer);return;}
@@ -165,6 +177,15 @@ async function startCall() {
             },25);
         }
         silentClock={context,oscillator,stream:destination.stream,microphone};await context.resume();
+        const remoteSamples=new Float32Array(1024);
+        nativeTimer=setInterval(()=>{
+            if(!remoteAnalyser || !playingReply?.native_live || callPaused || el('replyAudio').paused)return;
+            remoteAnalyser.getFloatTimeDomainData(remoteSamples);
+            if(Math.sqrt(remoteSamples.reduce((sum,x)=>sum+x*x,0)/remoteSamples.length)>.004){
+                lastRemoteVoiceAt=performance.now();playingReply.heardAudio=true;
+            }
+            if(playingReply.heardAudio && performance.now()-lastRemoteVoiceAt>2000 && performance.now()-playingReply.lastCaptionAt>2000 && /[.!؟?…]$/.test(playingReply.spoken.trim()))finishNativeReply(epoch);
+        },150);
         destination.stream.getTracks().forEach(t=>pc.addTrack(t,destination.stream));
         const dc=pc.createDataChannel('oai-events');events=dc;
         dc.onmessage=e=>receiveLiveMessage(e.data,epoch);
@@ -191,7 +212,7 @@ async function resumeCall(){
     if(!callActive) return;
     const epoch=callEpoch;
     if(callPaused){
-        if(pauseKind==='receipt'){if(!await commitReplyReceipt(epoch))return;}
+        if(playingReply){callPaused=false;pauseKind=null;backendReady=true;callError();enableListening();}
         else try{
             const response=await fetch('/live/retry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:callToken})});
             if(!response.ok) await apiJSON(response);
@@ -220,9 +241,9 @@ async function sendTypedCall() {
 }
 function closeServer(token){if(token)fetch('/live/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token}),keepalive:true}).catch(()=>{});}
 function endCall(clear=true) {
-    callActive=false;callEpoch++;replyGeneration++;playingReply=null;pendingReceipt=null;callBusy=false;backendReady=false;sessionStarted=false;
-    if(playbackUrl){URL.revokeObjectURL(playbackUrl);playbackUrl=null;}
-    clearTimeout(pollTimer);clearTimeout(startupTimer);clearTimeout(disconnectTimer);clearInterval(vadTimer);
+
+    callActive=false;callEpoch++;replyGeneration++;playingReply=null;callBusy=false;backendReady=false;sessionStarted=false;
+    clearTimeout(pollTimer);clearTimeout(startupTimer);clearTimeout(disconnectTimer);clearInterval(vadTimer);clearInterval(nativeTimer);remoteStream=null;remoteAnalyser=null;
     callStream?.getTracks().forEach(t=>t.stop());callStream=null;
     if(silentClock){silentClock.oscillator.stop();silentClock.stream.getTracks().forEach(t=>t.stop());silentClock.context.close().catch(()=>{});silentClock=null;}
     el('replyAudio').pause();el('replyAudio').srcObject=null;el('resumeCall').hidden=true;
@@ -379,7 +400,7 @@ async function interruptCall(){
     if(!callActive || bargeWaiting || callPaused)return;
     const epoch=callEpoch;bargeWaiting=true;replyGeneration++;
     // Stop local clip immediately. A partial answer never enters completed history.
-    el('replyAudio').pause();el('replyAudio').muted=true;el('replyAudio').removeAttribute('src');el('replyAudio').load();
+    el('replyAudio').muted=true;
     if(playingReply){playingReply.node.dataset.incomplete='true';const note=document.createElement('small');note.textContent='پاسخ قطع شد — در تاریخچه استفاده نمی‌شود';playingReply.node.append(note);}
     playingReply=null;
     setCallState('listening','حرف شما را می‌شنوم','پاسخ قبلی قطع شد؛ صحبت کنید.');
@@ -389,49 +410,44 @@ async function interruptCall(){
     }catch(error){if(epoch===callEpoch)pauseForRecovery('فرمان قطع پاسخ به سرور نرسید. برای ادامه تلاش دوباره را بزنید.');}
 }
 async function releaseInterruptedReply(version,epoch){
-    if(receivedReplyVersions.has(version) || releaseBusy || callPaused || playingReply || performance.now()-lastVoiceAt<900)return;
+    if(receivedReplyVersions.has(version) || releaseBusy || callPaused || playingReply || performance.now()-lastVoiceAt<650)return;
     releaseBusy=true;const generation=replyGeneration;
     try{
         const response=await fetch('/live/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:callToken,version})});
         if(response.status===409)return;
         const result=await apiJSON(response);
         if(epoch!==callEpoch || generation!==replyGeneration || !callActive)return;
-        // More microphone audio may have arrived during fetch; revalidate on server next poll.
-        if(performance.now()-lastVoiceAt<900)return;
         if(receivedReplyVersions.has(version))return;
         receivedReplyVersions.add(version);bargeWaiting=false;
-        const bytes=Uint8Array.from(atob(result.audio_base64),c=>c.charCodeAt(0));
-        if(playbackUrl)URL.revokeObjectURL(playbackUrl);
-        playbackUrl=URL.createObjectURL(new Blob([bytes],{type:result.audio_mime}));
-        appendTurn('assistant',result.reply,result.source);
+        appendTurn('assistant','',result.source);
         const node=transcriptList.lastElementChild,at=Math.max(0,...transcriptGroups.map(g=>g.end))+1;
-        transcriptGroups.push({role:'assistant',typed:true,start:at,end:at,fragments:[{text:result.reply,start:at,end:at}],node});
-        playingReply={...result,node};
-        const audio=el('replyAudio');audio.srcObject=null;audio.src=playbackUrl;audio.muted=false;
-        audio.onended=async()=>{
-            if(epoch!==callEpoch || generation!==replyGeneration || !playingReply)return;
-            const finished=playingReply;playingReply=null;
-            // Only this completion callback adds an exchange. Status text, duplicate
-            // provider events and interrupted clips are not conversation memory.
-            completedHistory.push({role:'user',content:finished.transcript.slice(0,2000)},{role:'assistant',content:finished.reply.slice(0,2000)});
-            completedHistory=completedHistory.slice(-500);saveHistory();enableListening();
-            pendingReceipt={token:callToken,version};await commitReplyReceipt(epoch);
-        };
-        audio.onerror=()=>{if(epoch===callEpoch)pauseForRecovery('پخش پاسخ ناموفق بود؛ پاسخ ناتمام وارد تاریخچه نشده است.');};
-        setCallState('speaking','دستیار در حال صحبت است');
-        await audio.play().catch(()=>{el('resumeCall').hidden=false;el('resumeCall').textContent='پخش پاسخ';});
-    }catch(error){if(epoch===callEpoch)pauseForRecovery('پاسخ آماده است اما پخش آن نیاز به تلاش دوباره دارد.');}
+        const group={role:'assistant',typed:true,start:at,end:at,fragments:[{text:'',start:at,end:at}],node};
+        transcriptGroups.push(group);
+        playingReply={...result,node,group,spoken:'',lastCaptionAt:performance.now(),heardAudio:false};
+        const audio=el('replyAudio');audio.srcObject=remoteStream;audio.muted=false;audio.playbackRate=1;
+        setCallState('responding','در انتظار پاسخ صوتی زنده');
+        await audio.play().catch(()=>{if(epoch===callEpoch){el('resumeCall').hidden=false;el('resumeCall').textContent='پخش صدای زنده';}});
+    }catch(error){if(epoch===callEpoch)pauseForRecovery('ارتباط پاسخ زنده ناموفق بود؛ متن محفوظ است.');}
     finally{if(epoch===callEpoch)releaseBusy=false;}
 }
-
-async function commitReplyReceipt(epoch){
-    if(!pendingReceipt)return true;
+function setNativeTranscript(text){
+    if(!playingReply?.native_live)return;
+    playingReply.spoken=text;playingReply.lastCaptionAt=performance.now();
+    playingReply.node.querySelector('p').textContent=text;
+    playingReply.group.fragments[0].text=text;
+    setCallState('speaking','دستیار در حال صحبت است');followLatest();
+}
+async function finishNativeReply(epoch){
+    if(nativeFinishBusy || !playingReply?.native_live)return;
+    nativeFinishBusy=true;const finished=playingReply,generation=replyGeneration;
     try{
-        const receipt=await fetch('/live/played',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(pendingReceipt)});
-        if(epoch!==callEpoch)return false;
-        if(!receipt.ok)throw new Error('Receipt unavailable');
-        pendingReceipt=null;
-        if(pauseKind==='receipt'){callPaused=false;pauseKind=null;backendReady=true;callError();enableListening();}
-        return true;
-    }catch(_){if(epoch===callEpoch)pauseForRecovery('ارتباط هنگام ثبت پاسخ قطع شد؛ متن کامل محفوظ است. برای ثبت دوباره، ادامه تماس را بزنید.','receipt');return false;}
+        const response=await fetch('/live/played',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:callToken,version:finished.version})});
+        if(response.status===409)return;
+        if(!response.ok)throw new Error('Completion not recorded');
+        if(epoch!==callEpoch || generation!==replyGeneration || playingReply!==finished)return;
+        completedHistory.push({role:'user',content:finished.transcript.slice(0,2000)},{role:'assistant',content:finished.spoken.slice(0,2000)});
+        completedHistory=completedHistory.slice(-500);playingReply=null;saveHistory();
+        el('replyAudio').muted=true;enableListening();
+    }catch(_){if(epoch===callEpoch)callError('ثبت زمینهٔ تماس موقتاً ناموفق بود؛ دوباره بررسی می‌شود.');}
+    finally{nativeFinishBusy=false;}
 }
