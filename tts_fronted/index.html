@@ -1,272 +1,82 @@
 <!DOCTYPE html>
-<html lang="fa">
+<html lang="fa" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>تبدیل متن به گفتار و گفتار به متن</title>
-    <link href="https://cdn.fontcdn.ir/font/bnazanin/0.0.1/bnazanin.min.css" rel="stylesheet">
-    <style>
-        /* General Styles */
-        body {
-            font-family: 'B Nazanin', serif;
-            background-color: #e9eff1;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            direction: rtl;
-        }
-
-        .container {
-            display: flex;
-            justify-content: space-between;
-            gap: 30px;
-            width: 90%;
-            max-width: 1200px;
-            padding: 40px;
-            background-color: #ffffff;
-            border-radius: 20px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-        }
-
-        .section {
-            width: 48%;
-            text-align: center;
-            padding: 20px;
-            background-color: #f8f9fc;
-            border-radius: 15px;
-            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
-        }
-
-        h1, h3 {
-            color: #333;
-            font-size: 30px;
-            margin-bottom: 25px;
-            font-weight: 600;
-        }
-
-        textarea {
-            padding: 15px;
-            width: 100%;
-            margin-bottom: 25px;
-            border: 2px solid #b5c6d1;
-            border-radius: 12px;
-            font-size: 18px;
-            outline: none;
-            background-color: #f5f7fb;
-            height: 150px;
-            resize: none;
-            box-sizing: border-box;
-            font-family: 'B Nazanin', serif;
-        }
-
-        textarea:focus {
-            border-color: #4caf50;
-            background-color: #ffffff;
-        }
-
-        button {
-            padding: 12px 25px;
-            background-color: #4caf50;
-            color: white;
-            border: none;
-            border-radius: 12px;
-            font-size: 18px;
-            cursor: pointer;
-            transition: background-color 0.3s ease;
-            width: 100%;
-            max-width: 300px;
-            margin: 15px auto;
-            font-weight: bold;
-            font-family: 'B Nazanin', serif;
-        }
-
-        button:hover {
-            background-color: #388e3c;
-        }
-
-        .loading {
-            margin-top: 20px;
-            color: #333;
-            font-size: 18px;
-            display: none;
-            font-weight: 600;
-        }
-
-        audio {
-            margin-top: 20px;
-            width: 80%;
-            max-width: 500px;
-            border-radius: 8px;
-            margin: 15px auto;
-        }
-
-        #transcriptionResult {
-            margin-top: 20px;
-            font-size: 18px;
-            color: #333;
-            font-weight: bold;
-            display: none;
-            word-wrap: break-word;
-        }
-
-        .footer {
-            margin-top: 40px;
-            font-size: 16px;
-            color: #777;
-            text-align: center;
-        }
-
-        .footer a {
-            color: #4caf50;
-            text-decoration: none;
-        }
-
-        /* File Upload Section */
-        .file-upload-container {
-            display: flex;
-            justify-content: center;
-            gap: 15px;
-            margin-bottom: 25px;
-            flex-direction: column;
-            align-items: center;
-        }
-
-        .file-upload-container label {
-            font-size: 18px;
-            color: #333;
-        }
-
-        .file-upload-container input {
-            font-size: 16px;
-            padding: 10px;
-            border-radius: 8px;
-            border: 2px solid #b5c6d1;
-            width: 80%;
-            margin-top: 10px;
-            font-family: 'B Nazanin', serif;
-        }
-
-        .file-upload-container button {
-            width: auto;
-            padding: 12px 25px;
-            font-size: 18px;
-            margin-top: 15px;
-            background-color: #4caf50;
-            color: white;
-        }
-
-        .file-upload-container button:hover {
-            background-color: #388e3c;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f7fa">
+    <title>آوا — استودیوی صدا و متن فارسی</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script defer src="{{ url_for('static', filename='script.js') }}"></script>
 </head>
 <body>
-
-    <div class="container">
-        <!-- Left Section: Text to Speech -->
-        <div class="section">
-            <h3>تبدیل متن به گفتار</h3>
-            <textarea id="textInput" placeholder="متن خود را وارد کنید..."></textarea>
-            <div class="button-audio-container">
-                <audio id="audioPlayer" controls></audio>
-                <button onclick="convertTextToSpeech()">تبدیل به گفتار</button>
-            </div>
-            <div class="loading" id="loadingMessage">در حال تبدیل متن به گفتار... لطفاً صبر کنید.</div>
-        </div>
-
-        <!-- Right Section: Speech to Text -->
-        <div class="section">
-            <h3>تبدیل گفتار به متن</h3>
-            <div class="file-upload-container">
-                <label for="audioInput">فایل صوتی را آپلود کنید</label>
-                <input type="file" id="audioInput" accept="audio/*">
-                <button onclick="transcribeAudio()">تبدیل به متن</button>
-            </div>
-            <div class="loading" id="sttLoadingMessage">در حال پردازش صوت... لطفاً صبر کنید.</div>
-            <div id="transcriptionResult"></div>
-        </div>
+<svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+<symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 10v4m4-8v12m5-16v20m5-16v12m4-8v4"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></symbol>
+<symbol id="i-text" viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M20 12H4m6-6-6 6 6 6"/></symbol>
+<symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v13m-5-5 5 5 5-5M4 17v4h16v-4"/></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="3"/><path d="M16 4V3H3v13h1"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="9" r="5"/><path d="m12 13 8 8m-4-4 3-3m-6 0 3-3"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H5v20h14V7Zm0 0v5h5M8 12h8m-8 4h6"/></symbol>
+</defs></svg>
+<a class="skip-link" href="#workspace">رفتن به محتوای اصلی</a>
+<aside class="sidebar">
+    <a class="brand" href="/" aria-label="آوا، صفحه اصلی"><span class="brand-mark"><svg><use href="#i-wave"/></svg></span><span>آوا<small>استودیوی صدا و متن</small></span></a>
+    <div class="nav-label">فضای کار</div>
+    <nav aria-label="ابزارهای صدا">
+        <button class="nav-item active" id="nav-stt" onclick="setWorkspace('stt')" aria-current="page"><svg><use href="#i-mic"/></svg>گفتار به متن<span class="nav-dot"></span></button>
+        <button class="nav-item" id="nav-tts" onclick="setWorkspace('tts')"><svg><use href="#i-wave"/></svg>متن به گفتار</button>
+        <button class="nav-item" id="nav-conversation" onclick="window.location.href='/call'"><svg><use href="#i-text"/></svg>گفت‌وگو با دستیار</button>
+    </nav>
+    <div class="sidebar-bottom">
+        <div class="little-note"><span class="note-icon">✦</span><strong>به زبان خودتان، روان‌تر.</strong><p>صدا را به نوشته تبدیل کنید؛<br>به نوشته‌ها صدا بدهید.</p></div>
+        <button class="nav-item" onclick="document.getElementById('keyDialog').showModal()"><svg><use href="#i-key"/></svg>تنظیمات سرور</button>
+        <div class="sidebar-meta"><span class="status-dot"></span>ساخته‌شده برای فارسی <span>FA</span></div>
     </div>
-
-    <script>
-        // Function for Text-to-Speech (TTS)
-        function convertTextToSpeech() {
-            var text = document.getElementById("textInput").value;
-            var loadingMessage = document.getElementById("loadingMessage");
-            var audioPlayer = document.getElementById("audioPlayer");
-
-            if (!text) {
-                alert("لطفاً متن خود را وارد کنید.");
-                return;
-            }
-
-            // Show loading message
-            loadingMessage.style.display = "block";
-
-            fetch("/tts", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({ text: text })
-            })
-            .then(response => response.blob())
-            .then(blob => {
-                // Hide loading message
-                loadingMessage.style.display = "none";
-
-                // Create a URL for the audio file
-                var audioUrl = URL.createObjectURL(blob);
-                audioPlayer.src = audioUrl; // Set the audio player's source
-                audioPlayer.style.display = "block"; // Show the audio player
-            })
-            .catch(error => {
-                loadingMessage.style.display = "none";
-                alert("خطا در تبدیل متن به گفتار. لطفاً دوباره تلاش کنید.");
-                console.error(error);
-            });
-        }
-
-        // Function for Speech-to-Text (STT)
-        function transcribeAudio() {
-            var audioInput = document.getElementById("audioInput").files[0];
-            var loadingMessage = document.getElementById("sttLoadingMessage");
-            var transcriptionResult = document.getElementById("transcriptionResult");
-
-            if (!audioInput) {
-                alert("لطفاً فایل صوتی را آپلود کنید.");
-                return;
-            }
-
-            // Show loading message
-            loadingMessage.style.display = "block";
-
-            var formData = new FormData();
-            formData.append("audio", audioInput);
-
-            fetch("/stt", {
-                method: "POST",
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                loadingMessage.style.display = "none";
-                if (data.transcription) {
-                    transcriptionResult.style.display = "block";
-                    transcriptionResult.innerText = data.transcription;
-                } else {
-                    transcriptionResult.style.display = "none";
-                    alert("خطا در تبدیل گفتار به متن.");
-                }
-            })
-            .catch(error => {
-                loadingMessage.style.display = "none";
-                alert("خطا در پردازش صوت. لطفاً دوباره تلاش کنید.");
-                console.error(error);
-            });
-        }
-    </script>
+</aside>
+<div class="app-shell">
+    <header class="topbar"><div class="breadcrumb">فضای کار <span>/</span> <strong id="breadcrumbTitle">گفتار به متن</strong></div><button class="connection-button" onclick="document.getElementById('keyDialog').showModal()"><span id="keyDot" class="status-dot muted"></span><span id="keyStatus">تنظیمات سرور</span><svg><use href="#i-key"/></svg></button></header>
+    <main id="workspace">
+        <div class="page-heading"><div><div class="eyebrow">استودیوی فارسی شما</div><h1 id="pageTitle">هر صدایی، یک نوشته.</h1><p id="pageSubtitle">صحبت کنید یا فایل صوتی بیاورید؛ متن فارسی‌تان را اینجا تحویل بگیرید.</p></div><span class="language-badge"><span>فا</span>فارسی <span class="status-dot"></span></span></div>
+        <section id="sttWorkspace" aria-label="گفتار به متن">
+            <div class="work-grid">
+                <section class="card source-card">
+                    <div class="card-heading"><div><span class="step">۰۱</span><h2>صدای شما</h2></div><span class="subtle">از اینجا شروع کنید</span></div>
+                    <div class="source-tabs" role="tablist" aria-label="منبع صدا"><button id="recordTab" role="tab" aria-selected="true" aria-controls="recordPanel" class="selected" onclick="setSource('record')"><svg><use href="#i-mic"/></svg>ضبط با میکروفون</button><button id="uploadTab" role="tab" aria-selected="false" aria-controls="uploadPanel" onclick="setSource('upload')"><svg><use href="#i-upload"/></svg>آپلود فایل</button></div>
+                    <div id="recordPanel" role="tabpanel" aria-labelledby="recordTab">
+                        <div class="record-stage" id="recordStage"><span class="stage-caption" id="stageCaption">آماده شنیدن صدای شما</span><button class="mic-orb" id="recordButton" onclick="startRecording()" aria-label="شروع ضبط صدا"><svg><use href="#i-mic"/></svg></button><div class="waveform" id="waveform" aria-hidden="true"></div><span class="record-time" id="recordTime" dir="ltr">00:00 <span>/ 02:00</span></span><p id="recordingStatus" role="status">برای شروع، روی میکروفون بزنید.</p><button class="stop-button" id="stopRecordButton" onclick="stopRecording()" hidden disabled><span></span>توقف ضبط</button></div>
+                        <audio id="recordingPreview" controls hidden aria-label="پیش‌نمایش صدای ضبط‌شده"></audio>
+                    </div>
+                    <div id="uploadPanel" role="tabpanel" aria-labelledby="uploadTab" hidden>
+                        <label class="drop-zone" id="dropZone" for="audioInput"><span class="upload-icon"><svg><use href="#i-upload"/></svg></span><strong>فایل صوتی را اینجا رها کنید</strong><span>یا برای انتخاب فایل کلیک کنید</span><small dir="ltr">MP3 · WAV · M4A · WebM · OGG · FLAC</small><small>حداکثر ۲۴ مگابایت</small><input type="file" id="audioInput" accept="audio/*,.mp4,.webm,.m4a,.mpga" onchange="selectFile(this.files[0])"></label>
+                        <div id="selectedFile" class="file-info" hidden><svg><use href="#i-file"/></svg><div><strong id="fileName"></strong><small id="fileSize"></small></div><button class="icon-button" onclick="clearFile()" aria-label="حذف فایل"><svg><use href="#i-close"/></svg></button></div>
+                        <audio id="uploadPreview" controls hidden aria-label="پیش‌نمایش فایل انتخاب‌شده"></audio>
+                    </div>
+                    <details class="context-options"><summary><svg><use href="#i-spark"/></svg>دقت بیشتر با موضوع و واژه‌ها<span>اختیاری</span></summary><label for="transcriptionContext">موضوع صحبت، نام‌ها و اصطلاحات مرتبط</label><textarea id="transcriptionContext" maxlength="600" rows="3" placeholder="مثلاً: جلسه طراحی محصول، تجربه کاربری، فیگما"></textarea><small>فقط واژه‌هایی را بنویسید که به صدای شما مربوط‌اند.</small></details>
+                    <div class="source-footer"><button class="button primary wide" id="recordingTranscribeButton" onclick="transcribeRecording()" disabled>تبدیل صدا به متن<svg><use href="#i-arrow"/></svg></button><button class="button primary wide" id="uploadTranscribeButton" onclick="transcribeAudio()" hidden disabled>تبدیل فایل به متن<svg><use href="#i-arrow"/></svg></button><p class="footnote">صدا فقط با زدن این دکمه برای پردازش ارسال می‌شود.</p></div>
+                    <div id="sttLoadingMessage" class="progress-message" role="status" hidden><span class="spinner"></span>در حال گوش دادن و نوشتن…</div><div id="sttError" class="error-message" role="alert" hidden></div>
+                </section>
+                <section class="card result-card"><div class="card-heading"><div><span class="step">۰۲</span><h2>متن شما</h2></div><span id="transcriptBadge" class="small-badge">آماده نوشتن</span></div>
+                    <div id="transcriptEmpty" class="empty-state"><div class="paper-illustration" aria-hidden="true"><svg><use href="#i-text"/></svg><span><svg><use href="#i-check"/></svg></span></div><h3>کلمات شما، اینجا می‌نشینند.</h3><p>یک صدا ضبط یا آپلود کنید.<br>بعد از تبدیل، متن را ویرایش، کپی یا دانلود کنید.</p></div>
+                    <div id="transcriptEditor" hidden><label class="sr-only" for="transcriptionResult">متن تبدیل‌شده؛ قابل ویرایش</label><textarea id="transcriptionResult" placeholder="متن شما…" oninput="updateTranscriptActions()"></textarea><div class="editor-meta"><span>قابل ویرایش</span><span id="wordCount">۰ کلمه</span></div></div>
+                    <div class="result-actions"><button class="button secondary" id="copyTranscript" onclick="copyTranscript()" disabled><svg><use href="#i-copy"/></svg>کپی متن</button><button class="button secondary" id="downloadTranscript" onclick="downloadTranscript()" disabled><svg><use href="#i-download"/></svg>دانلود TXT</button><button class="icon-button" id="clearTranscript" onclick="clearTranscript()" disabled aria-label="پاک کردن متن"><svg><use href="#i-close"/></svg></button></div>
+                    <button class="text-button" id="readTranscript" onclick="useTranscript()" disabled>این متن را به صدا تبدیل کنید<svg><use href="#i-arrow"/></svg></button>
+                </section>
+            </div>
+            <div class="tip-strip"><span class="tip-icon"><svg><use href="#i-spark"/></svg></span><div><strong>صدای واضح، متن دقیق‌تر.</strong><span>در محیطی آرام ضبط کنید، نزدیک میکروفون باشید و قبل از ارسال به صدا گوش دهید.</span></div><span class="tip-tag">یک نکته کوچک</span></div>
+        </section>
+        <section id="ttsWorkspace" aria-label="متن به گفتار" hidden><div class="work-grid">
+            <section class="card"><div class="card-heading"><div><span class="step">۰۱</span><h2>نوشته شما</h2></div><button class="text-button" onclick="insertSample()">متن نمونه</button></div><label class="sr-only" for="textInput">متن برای تبدیل به گفتار</label><textarea id="textInput" maxlength="4096" placeholder="چیزی بنویسید که دوست دارید شنیده شود…" oninput="updateTextCount()"></textarea><div class="editor-meta"><button class="text-button" onclick="document.getElementById('textInput').value=''; updateTextCount()">پاک کردن</button><span id="textCount">۰ / ۴۰۹۶ نویسه</span></div><div class="voice-info"><span class="voice-avatar"><svg><use href="#i-wave"/></svg></span><div><strong>صدای Coral</strong><small>خوانش طبیعی به زبان فارسی</small></div><span class="small-badge">هوش مصنوعی</span></div><button class="button primary wide" id="ttsButton" onclick="convertTextToSpeech()">ساخت صدا<svg><use href="#i-spark"/></svg></button><div id="loadingMessage" class="progress-message" role="status" hidden><span class="spinner"></span>در حال ساخت صدای شما…</div><div id="ttsError" class="error-message" role="alert" hidden></div></section>
+            <section class="card tts-result"><div class="card-heading"><div><span class="step">۰۲</span><h2>صدای شما</h2></div><span class="small-badge">WAV</span></div><div class="audio-art" aria-hidden="true"><div class="audio-ring"><svg><use href="#i-wave"/></svg></div></div><h3 id="audioTitle">به نوشته‌تان صدا بدهید.</h3><p id="audioDescription" class="subtle">بعد از ساخت، اینجا گوش دهید و دانلود کنید.</p><audio id="audioPlayer" controls hidden aria-label="صدای تولیدشده"></audio><div id="audioActions" class="audio-actions" hidden><label for="playbackRate">سرعت پخش</label><select id="playbackRate" onchange="document.getElementById('audioPlayer').playbackRate=Number(this.value)"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option></select><a id="downloadAudio" class="button secondary" download="ava-speech.wav"><svg><use href="#i-download"/></svg>دانلود صدا</a></div><p class="footnote">این صدا با هوش مصنوعی تولید می‌شود.</p></section>
+        </div></section>
+        <footer class="page-footer"><span><svg><use href="#i-wave"/></svg>آوا · از صدا تا کلمه</span><span>پردازش با OpenAI <i>·</i> متن و صدا با درخواست شما ارسال می‌شوند</span></footer>
+    </main>
+</div>
+<dialog id="keyDialog" aria-labelledby="keyTitle"><div class="dialog-heading"><h2 id="keyTitle">تنظیمات سرور</h2><button class="icon-button" onclick="document.getElementById('keyDialog').close()" aria-label="بستن"><svg><use href="#i-close"/></svg></button></div><p>کلید API فقط از متغیر محیطی OPENAI_API_KEY روی سرور خوانده می‌شود. کلید را در صفحه وارد نکنید.</p><p>مراقب می‌تواند برنامه را از ترمینالی که کلید در آن تنظیم شده راه‌اندازی کند. هر تبدیل با تعرفه حساب OpenAI محاسبه می‌شود.</p><button class="button primary" onclick="document.getElementById('keyDialog').close()">متوجه شدم</button></dialog>
+<div id="toast" class="toast" role="status" hidden></div>
 </body>
 </html>

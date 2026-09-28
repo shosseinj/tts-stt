@@ -1,0 +1,8 @@
+.venv/
+.bootstrap/
+__pycache__/
+.cache/
+model/downloaded/
+*.log
+.env
+.env.*
