@@ -113,6 +113,7 @@ async function pollBackend(epoch) {
         if(callBusy && !callPaused && !playingReply) setCallState('responding','در حال بررسی راهنما و پاسخ دادن');
         el('agentAudit').textContent=(status.audit || []).map(a=>
             'گفتار تشخیص‌داده‌شده: '+a.recognized_input+'\n'+
+            'نوبت‌های قبلی در زمینهٔ پاسخ: '+(a.memory_turns || 0)+'\n'+
             'بخش‌های بازیابی‌شده: '+(a.passages.map(p=>p.title+' / '+p.id+': '+p.text).join('\n') || 'مورد مرتبطی پیدا نشد')+'\n'+
             'گفتار ثبت‌شدهٔ دستیار ('+a.source.kind+'): '+a.reply).join('\n\n────────\n\n');
     } catch(error) {

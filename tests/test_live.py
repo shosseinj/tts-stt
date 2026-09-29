@@ -58,10 +58,12 @@ class LiveTests(unittest.TestCase):
             self.call.answer(0,'کی گل‌ها را آب بدهم؟',[], 'task_1')
         self.call.ws.send.assert_not_called()
         self.call.release_speech(0);self.call.release_speech(0)
-        self.assertEqual(self.call.ws.send.call_count,1)
-        event=json.loads(self.call.ws.send.call_args.args[0])
-        self.assertIn('گل‌ها را صبح',event['content'])
-        self.assertEqual(event['delegation_id'],'task_1')
+        events=[json.loads(c.args[0]) for c in self.call.ws.send.call_args_list]
+        self.assertEqual(sum(e['type']=='session.instructions.append' for e in events),1)
+        payload=''.join(e['content'].split('\n',1)[1] for e in events if e['type']=='session.thinking.append')
+        self.assertIn('گل‌ها را صبح',payload)
+        self.assertTrue(all(e['delegation_id']=='task_1' for e in events))
+        self.assertTrue(all(len(e['content'].encode('utf-8'))<=500 for e in events))
         self.client.responses.create.assert_not_called()
         self.client.audio.speech.create.assert_not_called()
         self.assertTrue(self.call.pending_speech['native_live'])
@@ -105,11 +107,13 @@ class LiveTests(unittest.TestCase):
         client.with_options.return_value=client
         client.live.create.return_value=Mock(session=Mock(id='live_test'), transport=Mock(sdp='answer\r\n'))
         with patch('app.get_client', return_value=client), patch('live_call.threading.Thread.start'):
-            response=app.app.test_client().post('/live/session',json={'sdp':'v=0\r\n','profile':{}})
+            response=app.app.test_client().post('/live/session',json={'sdp':'v=0\r\n','profile':{},'history':[{'role':'user','content':'اسم من حسین است'},{'role':'assistant','content':'سلام حسین.'}]})
         self.assertEqual(response.status_code,201)
         self.assertEqual(client.live.create.call_args.kwargs['transport']['sdp'],'v=0\r\n')
         self.assertEqual(set(response.json),{'token','session','transport'})
-        for call in calls.values():call.executor.shutdown(wait=True)
+        for call in calls.values():
+            self.assertEqual(call.memory.relevant('اسمم چیست؟')[0]['user'],'اسم من حسین است')
+            call.executor.shutdown(wait=True)
 
     def test_interruption_excludes_unfinished_output_and_rejects_old_work(self):
         self.prepare();self.call.on_event({'type':'session.output_transcript.delta','delta':'ناتمام'})
@@ -151,3 +155,59 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(web.post('/live/end',json={'token':'capability'}).status_code,204)
         self.assertTrue(self.call.closing)
         self.assertEqual(web.post('/live/end',json={'token':'capability'}).status_code,204)
+
+    def test_caller_name_survives_missing_completion_and_twenty_other_turns(self):
+        self.call.typed('اسم من حسین است');self.prepare(self.call.input_text)
+        # No /played receipt: the old implementation lost the caller's words here.
+        self.call.interrupt()
+        for i in range(20):
+            self.call.typed(f'درباره گل شماره {i} صحبت کنیم')
+            self.prepare(self.call.input_text);self.complete('گل زیباست.')
+        self.call.typed('نام من چیست؟');self.prepare(self.call.input_text)
+        history=self.call.pending_speech['context']['session_history']
+        self.assertEqual(history[0]['user'],'اسم من حسین است')
+        self.assertNotIn('assistant',history[0])
+        self.assertLess(len(history),15)
+        events=[json.loads(c.args[0]) for c in self.call.ws.send.call_args_list]
+        self.assertTrue(all(len(e['content'].encode('utf-8'))<=500 for e in events))
+        self.client.responses.create.assert_not_called()
+
+    def test_name_correction_keeps_provenance_and_order_without_partial_reply(self):
+        for text in ('اسم من حسن است','نه، اشتباه شنیدی، اسم من حسین است'):
+            self.call.typed(text);self.prepare(text)
+            self.call.on_event({'type':'session.output_transcript.delta','delta':'نام ساختگی'})
+            self.call.interrupt()
+        self.call.typed('اسمم چی بود؟');self.prepare(self.call.input_text)
+        remembered=self.call.pending_speech['context']['session_history']
+        self.assertEqual([r['user'] for r in remembered],['اسم من حسن است','نه، اشتباه شنیدی، اسم من حسین است'])
+        self.assertTrue(all('assistant' not in r for r in remembered))
+        self.assertEqual(self.call.profile,{})
+        self.assertIn('self-reported',session_config()['instructions'])
+
+    def test_memory_duplicate_release_clear_and_session_isolation(self):
+        self.prepare('من علی هستم');self.call.release_speech(self.call.version)
+        self.assertEqual(len(self.call.memory.turns),1)
+        other=LiveCall(Mock(),'other',{},None)
+        self.addCleanup(other.executor.shutdown,wait=True)
+        self.assertEqual(other.memory.relevant('نام من چیست؟'),[])
+        self.call.stop();self.assertEqual(self.call.memory.relevant('اسمم چیست؟'),[])
+
+    def test_older_completed_topic_is_retrieved_with_assistant_reply(self):
+        self.call.typed('درباره باغچه حرف بزن');self.prepare(self.call.input_text);self.complete('گل رز بکارید.')
+        for i in range(12):
+            self.call.typed(f'موسیقی شماره {i}');self.prepare(self.call.input_text);self.complete('آهنگ آرام.')
+        self.call.typed('برای باغچه چه گفتی؟');self.prepare(self.call.input_text)
+        self.assertEqual(self.call.pending_speech['context']['session_history'][0]['assistant'],'گل رز بکارید.')
+
+    def test_memory_and_unicode_packets_are_bounded(self):
+        from call_memory import CallMemory, MAX_TURNS, context_chunks
+        memory=CallMemory()
+        for i in range(MAX_TURNS+5):memory.remember(i,f'حرف {i}')
+        self.assertEqual(len(memory.turns),MAX_TURNS)
+        memory=CallMemory();memory.remember(0,'اسم من حسین است')
+        for i in range(1,20):memory.remember(i,'اسمم چیست؟')
+        self.assertEqual(memory.relevant('من کی هستم؟')[0]['user'],'اسم من حسین است')
+        original='حسین و گل 🌹 '*300
+        chunks=list(context_chunks(original))
+        self.assertEqual(''.join(chunks),original)
+        self.assertTrue(all(len(c.encode('utf-8'))<=400 for c in chunks))
